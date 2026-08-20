@@ -1,0 +1,40 @@
+{
+	"$schema": "../node_modules/@companion-module/base/assets/manifest.schema.json",
+	"type": "connection",
+	"id": "churchtranslator-api",
+	"name": "churchtranslator-api",
+	"shortname": "ChurchTranslator",
+	"description": "Live sermon translation — start/pause/stop a service and set the speaker's language from the booth",
+	"version": "1.0.0",
+	"license": "MIT",
+	"repository": "git+https://github.com/bitfocus/companion-module-churchtranslator-api.git",
+	"bugs": "https://github.com/bitfocus/companion-module-churchtranslator-api/issues",
+	"maintainers": [
+		{
+			"name": "Max Kulinich",
+			"email": "help@churchtranslator.ai",
+			"github": "mkulinich"
+		}
+	],
+	"runtime": {
+		"type": "node22",
+		"api": "nodejs-ipc",
+		"apiVersion": "0.0.0",
+		"entrypoint": "../src/main.js"
+	},
+	"legacyIds": [
+		"churchtranslator-churchtranslator"
+	],
+	"manufacturer": "ChurchTranslator.AI",
+	"products": [
+		"ChurchTranslator.AI"
+	],
+	"keywords": [
+		"church",
+		"translation",
+		"captions",
+		"interpretation",
+		"streaming",
+		"worship"
+	]
+}

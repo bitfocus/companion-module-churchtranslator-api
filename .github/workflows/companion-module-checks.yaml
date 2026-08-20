@@ -1,0 +1,12 @@
+# Bitfocus's shared module checks. This is what gates a version before it
+# can be submitted in the developer portal: it enforces yarn (no
+# package-lock.json), a committed yarn.lock, the presence of
+# companion/HELP.md, manifest validity, and that the built module's
+# entrypoint actually exports something.
+name: Companion Module Checks
+
+on: [push, pull_request]
+
+jobs:
+  module-checks:
+    uses: bitfocus/actions/.github/workflows/module-checks.yaml@main
