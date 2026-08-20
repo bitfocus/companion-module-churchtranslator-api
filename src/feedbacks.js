@@ -31,6 +31,18 @@ export function buildFeedbacks(instance) {
 			callback: () => instance.state.running && !instance.state.paused,
 		},
 
+		service_starting: {
+			type: 'boolean',
+			name: 'Service is starting',
+			description:
+				'True in the window between pressing Start and the capture app actually streaming — the server has left the ' +
+				'start command for the app to collect on its next poll. Falls back to not-live if nothing collects it, so a ' +
+				'closed or signed-out capture app never shows as started.',
+			defaultStyle: { bgcolor: AMBER, color: BLACK },
+			options: [],
+			callback: () => !instance.state.running && instance.state.remoteStartPending,
+		},
+
 		service_paused: {
 			type: 'boolean',
 			name: 'Translation paused',
