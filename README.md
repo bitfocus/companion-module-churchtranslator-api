@@ -77,9 +77,12 @@ starts.
 
 The capture token drives audio ingest and billing for one church, so
 Companion stores it as a **secret** — encrypted at rest and never shown
-back to you or included in an exported config. The token names exactly
-one church server-side, so this module structurally cannot address
-another church's service.
+back to you in the GUI. **But a full config export still contains it in
+cleartext** (verified against a real Companion 4.x export): treat an
+exported `.companionconfig` like the token itself — move it on a USB
+stick or AirDrop, not email or chat, and revoke + re-mint the token if
+an export gets loose. The token names exactly one church server-side,
+so this module structurally cannot address another church's service.
 
 ## Development
 

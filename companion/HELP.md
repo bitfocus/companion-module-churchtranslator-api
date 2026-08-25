@@ -48,6 +48,9 @@ driven from a variable or trigger without a separate action.
 ## Feedbacks
 
 - **Service is live** — a capture app is streaming and translation is not paused.
+- **Service is starting** — Start was pressed and the capture app hasn't picked
+  it up yet (it collects the command on its own poll, within a few seconds).
+  If nothing collects it, this clears rather than pretending the service began.
 - **Translation paused** — streaming, but muted.
 - **Listeners connected** — at least N phones are listening.
 - **Speaker's language is** — lights the language button that is currently active.
@@ -57,7 +60,7 @@ driven from a variable or trigger without a separate action.
 
 ## Variables
 
-`status`, `running`, `paused`, `listeners`, `source_language`,
+`status`, `running`, `paused`, `starting`, `listeners`, `source_language`,
 `source_language_label`, `scheduled_source_language`, `engine`,
 `languages_translating`, `last_error`.
 

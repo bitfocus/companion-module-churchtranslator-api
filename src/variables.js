@@ -11,9 +11,10 @@ export function buildVariables(instance) {
 	const s = instance.state
 
 	const definitions = {
-		status: { name: 'Service status (Live / Paused / Offline / Unreachable)' },
+		status: { name: 'Service status (Live / Paused / Starting / Offline / Unreachable)' },
 		running: { name: 'Capture streaming (true/false)' },
 		paused: { name: 'Translation paused (true/false)' },
+		starting: { name: 'Start pressed, capture app not yet streaming (true/false)' },
 		listeners: { name: 'Listeners connected right now' },
 		source_language: { name: "Speaker's language code (e.g. ru)" },
 		source_language_label: { name: "Speaker's language name (e.g. Russian)" },
@@ -24,9 +25,22 @@ export function buildVariables(instance) {
 	}
 
 	const values = {
-		status: !s.reachable ? 'Unreachable' : !s.running ? 'Offline' : s.paused ? 'Paused' : 'Live',
+		// "Starting" sits between Offline and Live: the start command is
+		// waiting for the capture app's poll. Without it the lamp jumps
+		// Offline → Live with nothing in between, and an operator who
+		// pressed Start four seconds ago presses it again.
+		status: !s.reachable
+			? 'Unreachable'
+			: s.running
+				? s.paused
+					? 'Paused'
+					: 'Live'
+				: s.remoteStartPending
+					? 'Starting'
+					: 'Offline',
 		running: s.running ? 'true' : 'false',
 		paused: s.paused ? 'true' : 'false',
+		starting: !s.running && s.remoteStartPending ? 'true' : 'false',
 		listeners: s.listeners,
 		source_language: s.sourceLanguage,
 		source_language_label: instance.labelFor(s.sourceLanguage),

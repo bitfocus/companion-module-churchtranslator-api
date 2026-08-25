@@ -62,6 +62,8 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 			reachable: false,
 			running: false,
 			paused: false,
+			/** START pressed, capture app hasn't picked it up yet. */
+			remoteStartPending: false,
 			listeners: 0,
 			voiceMode: '',
 			sourceLanguage: '',
@@ -311,6 +313,9 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 				reachable: true,
 				running: Boolean(status.running),
 				paused: Boolean(status.paused),
+				// Absent on a server that predates remote start; falsy is
+				// the right reading there, since nothing can be pending.
+				remoteStartPending: Boolean(status.remoteStartPending),
 				listeners: Number(status.listeners) || 0,
 				voiceMode: String(status.voiceMode || ''),
 				sourceLanguage: String(language.sourceLanguage || status.sourceLanguage || ''),
@@ -392,7 +397,14 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 	#publish() {
 		const { values } = buildVariables(this)
 		this.setVariableValues(values)
-		this.checkFeedbacks('service_live', 'service_paused', 'has_listeners', 'source_language_is', 'schedule_pending')
+		this.checkFeedbacks(
+			'service_live',
+			'service_starting',
+			'service_paused',
+			'has_listeners',
+			'source_language_is',
+			'schedule_pending',
+		)
 	}
 
 	/** Human label for a code, falling back to the bare code. */
