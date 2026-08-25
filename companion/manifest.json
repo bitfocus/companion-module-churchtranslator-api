@@ -5,7 +5,7 @@
 	"name": "churchtranslator-api",
 	"shortname": "ChurchTranslator",
 	"description": "Live sermon translation — start/pause/stop a service and set the speaker's language from the booth",
-	"version": "1.1.0",
+	"version": "1.1.1",
 	"license": "MIT",
 	"repository": "git+https://github.com/bitfocus/companion-module-churchtranslator-api.git",
 	"bugs": "https://github.com/bitfocus/companion-module-churchtranslator-api/issues",
