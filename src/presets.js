@@ -37,6 +37,7 @@ export function buildPresets(instance, targetLanguages) {
 		steps: [{ down: [], up: [] }],
 		feedbacks: [
 			{ feedbackId: 'service_live', options: {}, style: { bgcolor: GREEN, color: WHITE } },
+			{ feedbackId: 'service_starting', options: {}, style: { bgcolor: AMBER, color: BLACK } },
 			{ feedbackId: 'service_paused', options: {}, style: { bgcolor: AMBER, color: BLACK } },
 		],
 	}
@@ -71,7 +72,18 @@ export function buildPresets(instance, targetLanguages) {
 		keywords: ['start'],
 		style: style('Start\\nservice', GREEN),
 		steps: [{ down: [{ actionId: 'start_service', options: {} }], up: [] }],
-		feedbacks: [],
+		// Amber while the capture app hasn't collected the command yet —
+		// the answer to "did my press do anything?" that stops the
+		// double-press. Goes dark once the service is genuinely live, so
+		// the operator reads the status lamp instead.
+		feedbacks: [
+			{
+				feedbackId: 'service_starting',
+				options: {},
+				style: { bgcolor: AMBER, color: BLACK, text: 'Starting…' },
+			},
+			{ feedbackId: 'service_live', options: {}, style: { bgcolor: DARK, color: WHITE } },
+		],
 	}
 
 	presets['stop_service'] = {

@@ -259,6 +259,18 @@ test('the status variable distinguishes offline from unreachable', () => {
 	assert.equal(status({ reachable: true, running: true, paused: true }), 'Paused')
 	assert.equal(status({ reachable: true, running: false }), 'Offline')
 	assert.equal(status({ reachable: false, running: false }), 'Unreachable')
+	// Between START and the capture app collecting it: Starting, not
+	// Offline — the gap that makes an operator press START again.
+	assert.equal(status({ reachable: true, running: false, remoteStartPending: true }), 'Starting')
+	// A pending note never outranks a genuinely running service.
+	assert.equal(status({ reachable: true, running: true, paused: false, remoteStartPending: true }), 'Live')
+})
+
+test('the starting feedback lights only in the press-to-streaming window', () => {
+	const fb = (state) => buildFeedbacks(fakeInstance(state)).service_starting.callback({ options: {} })
+	assert.equal(fb({ running: false, remoteStartPending: true }), true)
+	assert.equal(fb({ running: true, remoteStartPending: true }), false)
+	assert.equal(fb({ running: false, remoteStartPending: false }), false)
 })
 
 test('no variable ever renders as undefined on a button', () => {
