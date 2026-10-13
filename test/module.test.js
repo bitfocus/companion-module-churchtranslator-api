@@ -93,6 +93,17 @@ test('setting the language lowercases it — a button labelled RU still works', 
 	)
 })
 
+test('a language button set to switch now asks for the running service too', async () => {
+	await withFetch(
+		() => jsonResponse({ ok: true, sourceLanguage: 'uk', live: true, appliedToLiveSession: true }),
+		async (calls) => {
+			await api().setSourceLanguage('uk', { applyNow: true })
+			assert.equal(calls[0].url, 'https://api.example.test/v1/control/source-language/uk?apply=now')
+			assert.equal(calls[0].init.method, 'POST')
+		},
+	)
+})
+
 test('a nonsense language code is rejected before a request goes out', async () => {
 	await withFetch(
 		() => {
@@ -219,6 +230,21 @@ test('changing language during a live service warns that it applies to the next 
 	const warning = instance.calls.find((c) => c.level === 'warn')
 	assert.ok(warning, 'expected a warning when a live session did not take the change')
 	assert.match(warning.msg, /next service/)
+})
+
+test('the switch-now box is off unless ticked, including on buttons saved before it existed', async () => {
+	const seen = []
+	const instance = fakeInstance({ running: true })
+	instance.api.setSourceLanguage = async (code, opts) => {
+		seen.push(opts)
+		return { ok: true, sourceLanguage: code, appliedToLiveSession: true }
+	}
+	const action = buildActions(instance).set_source_language
+	assert.equal(action.options.find((o) => o.id === 'apply_now').default, false)
+	await action.callback({ options: { code: 'ru' } })
+	await action.callback({ options: { code: 'ru', apply_now: false } })
+	await action.callback({ options: { code: 'ru', apply_now: true } })
+	assert.deepEqual(seen, [{ applyNow: false }, { applyNow: false }, { applyNow: true }])
 })
 
 test('the language dropdown offers something usable before the roster loads', () => {

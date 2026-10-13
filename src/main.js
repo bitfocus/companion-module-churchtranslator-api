@@ -18,19 +18,29 @@
  *   variables.js — text for button labels ($(ct:listeners) etc.)
  *   presets.js   — ready-made buttons so a new user isn't staring at a
  *                  blank config
+ *   health.js    — the health read-out: parsing, alarms, meter pixels
+ *   meter.js     — the live input-level WebSocket
  *
  * One poll loop drives feedbacks and variables. Companion asks for
  * feedback synchronously and often, so every feedback callback reads
  * this.state — a plain object refreshed on a timer — rather than making
  * its own request.
+ *
+ * The health read-out (1.2.0, servers from 2026-10-02) adds two faster
+ * clocks, both running only while a service is live: a 1-second tick for
+ * the on-air clock, and — only while a meter button is placed — the
+ * meter socket's 100 ms readings, redrawn at most ten times a second and
+ * only when a lit segment actually changes.
  */
 import { InstanceBase, InstanceStatus } from '@companion-module/base'
 import { ApiError, ControlApi } from './api.js'
 import { UpgradeScripts } from './upgrades.js'
 import { buildActions } from './actions.js'
 import { buildFeedbacks } from './feedbacks.js'
-import { buildVariables } from './variables.js'
+import { buildVariables, peakText } from './variables.js'
 import { buildPresets } from './presets.js'
+import { inputView, meterKey, onAirText, parseHealth } from './health.js'
+import { MeterFeed } from './meter.js'
 
 // Module API v2 boots a connection by importing this file: Companion
 // reads the default export (the instance class) and the named
@@ -48,6 +58,20 @@ const MAX_POLL_SECONDS = 60
 const MAX_BACKOFF_SECONDS = 60
 /** How often to re-probe an endpoint the server said it doesn't have. */
 const LANGUAGE_RETRY_MS = 5 * 60 * 1000
+/** Meter redraws at most this often: ten a second. */
+const METER_REDRAW_MS = 100
+/** Every feedback a poll can move, rechecked after each one. */
+const POLLED_FEEDBACKS = [
+	'service_live',
+	'service_starting',
+	'service_paused',
+	'has_listeners',
+	'source_language_is',
+	'schedule_pending',
+	'language_trouble',
+	'input_alarm',
+	'input_meter',
+]
 
 export default class ChurchTranslatorInstance extends InstanceBase {
 	constructor(internal) {
@@ -70,6 +94,9 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 			scheduledSourceLanguage: '',
 			perLangMinutes: {},
 			lastError: '',
+			// The health read-out — see parseHealth. hasHealth stays false
+			// against a server that predates it, and nothing below changes.
+			...parseHealth(null),
 		}
 		/** code -> English label, from the API so it can't go stale here. */
 		this.languageLabels = {}
@@ -92,6 +119,27 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 		/** Set by #stopPolling so an already-scheduled tick doesn't fire. */
 		this.pollStopped = false
 		this.pollTimer = null
+
+		/** Placed "Input level meter" feedbacks, by feedback instance id. */
+		this.meterFeedbackIds = new Set()
+		this.meter = new MeterFeed({
+			connect: () => this.api.openMeterSocket(),
+			onChange: () => this.#meterChanged(),
+			log: (level, msg) => this.log(level, msg),
+		})
+		/** The meter state last handed to Companion, and when — the redraw budget. */
+		this.meterDrawnKey = ''
+		this.meterDrawnAt = 0
+		this.meterRedrawTimer = null
+		/** The input mode last published, so an alarm starting or clearing rechecks at once. */
+		this.inputMode = ''
+		/** 1-second tick while live: the on-air clock and meter housekeeping. */
+		this.clockTimer = null
+		/** Ids of the variable definitions last published, so they're only re-sent when they change. */
+		this.variableIds = ''
+		/** Last value sent per variable, so the fast clocks only send what moved. */
+		this.variableCache = {}
+		this.destroyed = false
 	}
 
 	async init(config, _isFirstInit, secrets) {
@@ -102,9 +150,7 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 
 		this.setActionDefinitions(buildActions(this))
 		this.setFeedbackDefinitions(buildFeedbacks(this))
-		const { definitions, values } = buildVariables(this)
-		this.setVariableDefinitions(definitions)
-		this.setVariableValues(values)
+		this.#publishVariables()
 		this.#publishPresets()
 
 		// One immediate poll so the buttons are right within a second of
@@ -116,7 +162,12 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 	}
 
 	async destroy() {
+		this.destroyed = true
 		this.#stopPolling()
+		this.#stopClock()
+		if (this.meterRedrawTimer) clearTimeout(this.meterRedrawTimer)
+		this.meterRedrawTimer = null
+		this.meter.close()
 	}
 
 	async configUpdated(config, secrets) {
@@ -126,6 +177,8 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 		if (config !== undefined) this.config = config ?? {}
 		if (secrets !== undefined) this.secrets = secrets ?? {}
 		this.#buildApi()
+		// A socket opened with the old token or server must not outlive it.
+		this.meter.reset()
 		this.updateStatus(InstanceStatus.Connecting)
 		this.consecutiveFailures = 0
 		await Promise.all([this.#refreshLanguages(), this.poll()])
@@ -322,6 +375,9 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 				scheduledSourceLanguage: String(language.scheduledSourceLanguage || ''),
 				perLangMinutes: status.perLangMinutes || {},
 				lastError: '',
+				// listenersByLanguage, languageHealth, input, startedAt —
+				// absent on an older server, and then hasHealth is false.
+				...parseHealth(status),
 			}
 			this.updateStatus(InstanceStatus.Ok)
 			this.consecutiveFailures = 0
@@ -336,8 +392,9 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 			// targets (a Russian-speaking church translating only INTO
 			// English has no "ru" target). That language isn't known until
 			// the first poll, and it changes when someone switches, so the
-			// preset list is rebuilt whenever it moves.
-			if (this.state.sourceLanguage !== this.presetsBuiltFor) {
+			// preset list is rebuilt whenever it moves — and when the server
+			// turns out to have (or no longer have) the health read-out.
+			if (this.#presetsKey() !== this.presetsBuiltFor) {
 				this.#publishPresets()
 			}
 		} catch (e) {
@@ -381,30 +438,177 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 			this.setFeedbackDefinitions(buildFeedbacks(this))
 			this.targetLanguages = body.targetLanguages || []
 			this.#publishPresets()
+			// The church's languages decide which listeners_<code> variables exist.
+			this.#publishVariables()
 			this.log('info', `Loaded ${this.languageChoices.length} languages from the server`)
 		} catch (e) {
 			this.log('debug', `Could not load the language list: ${e.message}`)
 		}
 	}
 
+	#presetsKey() {
+		return `${this.state.sourceLanguage}|${this.state.hasHealth ? 'health' : ''}`
+	}
+
 	#publishPresets() {
 		const { structure, presets } = buildPresets(this, this.targetLanguages)
 		this.setPresetDefinitions(structure, presets)
-		this.presetsBuiltFor = this.state.sourceLanguage
+		this.presetsBuiltFor = this.#presetsKey()
+	}
+
+	/**
+	 * Variable definitions only when the SET of variables changes (the
+	 * server gained the read-out, the church added a language); values
+	 * every time.
+	 */
+	#publishVariables() {
+		const { definitions, values } = buildVariables(this)
+		const ids = Object.keys(definitions).join(',')
+		if (ids !== this.variableIds) {
+			this.variableIds = ids
+			this.setVariableDefinitions(definitions)
+		}
+		this.setVariableValues(values)
+		this.variableCache = { ...values }
+	}
+
+	/**
+	 * Send just the variables whose value moved — the 1 s and 100 ms clocks
+	 * use this. Only ones already defined: a meter reading can land in the
+	 * moment between a poll discovering the read-out and its definitions
+	 * going out, and Companion rejects values for undefined variables.
+	 */
+	#setChangedVariables(values) {
+		const changed = {}
+		let any = false
+		for (const [id, value] of Object.entries(values)) {
+			if (!(id in this.variableCache) || this.variableCache[id] === value) continue
+			changed[id] = value
+			this.variableCache[id] = value
+			any = true
+		}
+		if (any) this.setVariableValues(changed)
 	}
 
 	/** Push the current state to every feedback and variable. */
 	#publish() {
-		const { values } = buildVariables(this)
-		this.setVariableValues(values)
-		this.checkFeedbacks(
-			'service_live',
-			'service_starting',
-			'service_paused',
-			'has_listeners',
-			'source_language_is',
-			'schedule_pending',
+		this.#publishVariables()
+		this.checkFeedbacks(...POLLED_FEEDBACKS)
+		// That recheck redrew the meter and the alarms too; the fast path
+		// measures change from here.
+		const view = this.inputView()
+		this.meterDrawnKey = meterKey(view)
+		this.meterDrawnAt = Date.now()
+		this.inputMode = view.mode
+		this.#syncClock()
+		this.syncMeter()
+	}
+
+	// --- The health read-out's fast clocks ---------------------------------
+
+	/** What the input meter shows right now: the socket if fresh, else the poll. */
+	inputView() {
+		return inputView(this.state, this.meter)
+	}
+
+	/**
+	 * The meter socket is wanted only while all of it is true: the server
+	 * has the read-out, a service is live and not paused (a paused app
+	 * sends no audio, so there is nothing to meter), and somebody has
+	 * placed a meter button. Each socket is one of the eight the server
+	 * allows per church, so a deck without a meter on it doesn't hold one.
+	 */
+	syncMeter() {
+		const s = this.state
+		this.meter.want(
+			Boolean(
+				!this.destroyed &&
+				this.api?.configured &&
+				s.reachable &&
+				s.hasHealth &&
+				s.running &&
+				!s.paused &&
+				this.meterFeedbackIds.size > 0,
+			),
 		)
+	}
+
+	/** From the meter feedback's callback: a meter button exists. */
+	meterFeedbackSeen(id) {
+		if (this.meterFeedbackIds.has(id)) return
+		this.meterFeedbackIds.add(id)
+		// Not from inside the feedback callback itself — Companion is
+		// waiting on its return value.
+		if (this.meterFeedbackIds.size === 1) queueMicrotask(() => this.syncMeter())
+	}
+
+	/** From the meter feedback's unsubscribe: a meter button was removed or disabled. */
+	meterFeedbackGone(id) {
+		if (!this.meterFeedbackIds.delete(id)) return
+		if (this.meterFeedbackIds.size === 0) queueMicrotask(() => this.syncMeter())
+	}
+
+	/**
+	 * A reading arrived, or the feed went quiet: publish what changed.
+	 * Alarms and the state variable at once; the meter within the redraw
+	 * budget, and only when a segment actually lit or went out — during
+	 * steady speech most readings change nothing on the button.
+	 */
+	#meterChanged() {
+		if (this.destroyed) return
+		const view = this.inputView()
+		if (view.mode !== this.inputMode) {
+			this.inputMode = view.mode
+			this.checkFeedbacks('input_alarm')
+		}
+		if (this.state.hasHealth) {
+			this.#setChangedVariables({
+				input_state: view.mode,
+				input_peak_db: peakText(view),
+			})
+		}
+		if (meterKey(view) === this.meterDrawnKey || this.meterRedrawTimer) return
+		const wait = METER_REDRAW_MS - (Date.now() - this.meterDrawnAt)
+		if (wait <= 0) {
+			this.#redrawMeter()
+			return
+		}
+		this.meterRedrawTimer = setTimeout(() => {
+			this.meterRedrawTimer = null
+			this.#redrawMeter()
+		}, wait)
+	}
+
+	#redrawMeter() {
+		if (this.destroyed) return
+		const key = meterKey(this.inputView())
+		if (key === this.meterDrawnKey) return
+		this.meterDrawnKey = key
+		this.meterDrawnAt = Date.now()
+		if (this.meterFeedbackIds.size > 0) this.checkFeedbacks('input_meter')
+	}
+
+	/** The 1-second tick runs while a service is live on a server with the read-out. */
+	#syncClock() {
+		const want = !this.destroyed && this.state.hasHealth && this.state.running
+		if (want && !this.clockTimer) {
+			this.clockTimer = setInterval(() => this.#clockTick(), 1000)
+		} else if (!want) {
+			this.#stopClock()
+		}
+	}
+
+	#stopClock() {
+		if (this.clockTimer) clearInterval(this.clockTimer)
+		this.clockTimer = null
+	}
+
+	#clockTick() {
+		this.#setChangedVariables({ on_air: onAirText(this.state) })
+		// A socket due a reconnect, and a socket gone quiet handing the
+		// meter back to the poll's level.
+		this.syncMeter()
+		this.#meterChanged()
 	}
 
 	/** Human label for a code, falling back to the bare code. */

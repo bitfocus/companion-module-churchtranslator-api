@@ -66,7 +66,7 @@ export function buildActions(instance) {
 		set_source_language: {
 			name: "Set speaker's language",
 			description:
-				'The language being preached. Press between services: a service already streaming keeps the language it started with.',
+				'The language being preached. A service already streaming keeps the language it started with, unless "Switch the running service now" is ticked.',
 			options: [
 				{
 					type: 'dropdown',
@@ -79,11 +79,23 @@ export function buildActions(instance) {
 					// rejects unknown ones with a message we log.
 					regex: '/^[a-zA-Z]{2,3}$/',
 				},
+				{
+					// Off by default (and on every button saved before 1.3.0,
+					// which has no value here): an accidental press mid-sermon
+					// must not interrupt anyone. On, it is the booth's fix for a
+					// service that started on the wrong language (MMGC
+					// 2026-10-11: an hour of untranslated Russian captions).
+					type: 'checkbox',
+					id: 'apply_now',
+					label: "Switch the running service now (listeners hear a few seconds' pause)",
+					default: false,
+				},
 			],
 			callback: async (action) => {
 				const code = String(action.options.code || '').trim()
+				const applyNow = action.options.apply_now === true
 				const result = await instance.runAction(`Set speaker language to ${code}`, () =>
-					instance.api.setSourceLanguage(code),
+					instance.api.setSourceLanguage(code, { applyNow }),
 				)
 				// Say out loud when a live service didn't take the change —
 				// otherwise the operator presses RU mid-sermon and believes it.

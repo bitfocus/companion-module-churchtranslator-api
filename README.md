@@ -44,16 +44,71 @@ revoked — mint a new one on the same dashboard card.
 **Feedbacks** — service is live, translation paused, listeners
 connected (with a threshold), speaker's language is X, and "schedule
 wants a different language" for churches whose services aren't all in
-one language.
+one language. Plus the health read-out's language in trouble, input
+alarm and input level meter (below).
 
 **Variables** — `status`, `listeners`, `source_language`,
 `source_language_label`, `scheduled_source_language`, `engine`, `running`,
-`paused`, `languages_translating`, `last_error`.
+`paused`, `languages_translating`, `last_error` — and, against a server
+with the health read-out, the ones listed below.
 
 Companion prefixes these with **your connection's label**, not a fixed
 module name: `$(Woodmark:status)` if the connection is called Woodmark.
 Presets you drag in are rewritten to your label automatically — but a
 button you build by hand, or a profile written outside Companion, is not.
+
+## Health read-out (1.2.0)
+
+The Companion side of the native Stream Deck plugin's 1.4.0 read-out,
+with the same thresholds, so two decks in one booth raise the same alarm
+at the same moment. Problems are shown by exception.
+
+- **Language preset buttons** carry that language's listener count as a
+  second line (`$(ct:listeners_ru)`: cloud + Local Wi-Fi relay phones),
+  and turn amber while its translation is stalled / red when no engine
+  can serve it — the **Language in trouble** feedback, placed twice
+  (`when: stalled`, `when: unavailable`).
+- **Input meter** preset, for the key beside START: the on-air clock
+  (`$(ct:on_air)`) over the **Input level meter** advanced feedback — ten
+  segments drawn into the button's image buffer at dB steps −60 … −3,
+  OBS colours (red ≥ −9, yellow ≥ −20, green below), 2 s peak hold,
+  20 dB/s release — and the **Input alarm** feedback: NO SOUND after 15 s
+  of silent audio, NO FEED after 5 s without frames, nothing while paused.
+- **Variables**: `total_listeners`, `on_air`, `input_peak_db`,
+  `input_state` (live / paused / off / nosound / nofeed / unknown), and
+  `listeners_<code>` / `health_<code>` for the church's own languages,
+  the one being preached, and any the server reports.
+
+Where it comes from: `/status` on servers from 2026-10-02 carries
+`totalListeners`, `listenersByLanguage`, `languageHealth`, `startedAt`
+and `input` (a 1-second level). For the meter, `WS
+/v1/control/{session}/meter` pushes a reading every 100 ms; the module
+opens it (token in the `Authorization` header, not the URL) only while
+the server has the read-out, the service is live and unpaused, and an
+Input level meter feedback is placed — module API 2.x has no feedback
+`subscribe`, so the meter's callback/`unsubscribe` pair is the signal.
+Backoff 2 s, 4 s … 60 s (30 s on 4429, the 8-sockets-per-church cap),
+reset by a reading. Redraws are capped at 10/s and skipped unless a
+segment changed; a socket quiet for 1.5 s hands back to the poll's level.
+
+Against an older server (`listenersByLanguage` absent) the module
+behaves as 1.1 did: no new variables, the old presets, no socket. (The
+three new feedbacks are listed, and never light.)
+
+The downloadable per-church `.companionconfig` (the dashboard's Booth
+control card) is built server-side from its own copy of
+`templates/translator-page.companionconfig`, so it does not pick any of
+this up yet — see the template README.
+
+Pixel contract, verified against `@companion-module/base` 2.1.3's
+typings and Companion 5.0's renderer (`drawPixelBuffer`): `imageBuffer`
+is a **base64 string** of exactly `width × height × 4` bytes for
+`imageBufferEncoding: { pixelFormat: 'RGBA' }` (×3 for RGB; 4-byte
+buffers with no format are read as ARGB), placed by
+`imageBufferPosition` in the button's 72-unit space. Without a position
+Companion expects a buffer the size of the whole canvas, whose height
+depends on the top bar — so the module always passes one.
+`feedback.image` is `{ width: 72, height: 58 }` in Companion 5.
 
 ## The one thing worth knowing about language buttons
 
@@ -67,6 +122,11 @@ mid-stream. So:
 - Pressing one **mid-sermon** changes the setting, but _this_ service
   keeps the language it started with. The module logs a warning when
   that happens rather than letting you believe it switched.
+- Unless the button's **Switch the running service now** box is ticked
+  (1.3.0, off by default): then the press also restarts the running
+  service's translation on the new language. The capture app reconnects
+  within seconds and listeners hear a short pause. Tick it on the buttons
+  the booth uses to fix a service that started on the wrong language.
 
 If your services always run in the same order, you can skip the buttons
 entirely: set the speaker language per service under **Service

@@ -32,15 +32,15 @@ revoked — mint a new one on the same dashboard card.
 
 ## Actions
 
-| Action                 | What it does                                                                                                                              |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| Start service          | Tells listeners to expect audio and asks your capture app to start streaming — it picks this up within a few seconds if it is open and signed in. |
-| Pause translation      | Mutes translation. Listeners stay connected and billing stops.                                                                            |
-| Resume translation     | Unmutes.                                                                                                                                  |
-| Toggle pause / resume  | One button for both, driven by the live state.                                                                                            |
-| Stop service           | Ends the service; the capture app stops streaming.                                                                                        |
-| Set speaker's language | The language being preached, from a dropdown your server fills in.                                                                        |
-| Refresh status now     | Forces an immediate poll. Rarely needed.                                                                                                  |
+| Action                 | What it does                                                                                                                                                                                                     |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Start service          | Tells listeners to expect audio and asks your capture app to start streaming — it picks this up within a few seconds if it is open and signed in.                                                                |
+| Pause translation      | Mutes translation. Listeners stay connected and billing stops.                                                                                                                                                   |
+| Resume translation     | Unmutes.                                                                                                                                                                                                         |
+| Toggle pause / resume  | One button for both, driven by the live state.                                                                                                                                                                   |
+| Stop service           | Ends the service; the capture app stops streaming.                                                                                                                                                               |
+| Set speaker's language | The language being preached, from a dropdown your server fills in. Tick "Switch the running service now" to change a service already streaming (a few seconds' pause); otherwise it applies to the next service. |
+| Refresh status now     | Forces an immediate poll. Rarely needed.                                                                                                                                                                         |
 
 The language dropdown supports Companion's expression mode, so it can be
 driven from a variable or trigger without a separate action.
@@ -57,6 +57,8 @@ driven from a variable or trigger without a separate action.
 - **Schedule wants a different language** — your service schedule would switch
   the speaker language for a session starting now, but the current setting is
   something else. Useful as a check before a bilingual Sunday.
+- **Language in trouble**, **Input alarm (NO SOUND / NO FEED)** and **Input
+  level meter** — the health read-out, below.
 
 ## Variables
 
@@ -68,6 +70,40 @@ Companion prefixes variables with **your connection's label**, not a fixed
 name. If you name the connection `ct`, you write `$(ct:status)`; if you name
 it `Woodmark`, you write `$(Woodmark:status)`. Presets you drag in are
 rewritten to your label automatically.
+
+## Health read-out
+
+The deck can also say how the service is _doing_, not just whether it is on.
+Problems are shown by exception: a healthy deck looks the same every Sunday,
+so the one button that changes colour is the one to look at.
+
+- **Language buttons** (from the presets) show that language's listener count
+  as their second line — phones on the cloud plus phones on the Local Wi-Fi
+  relay. They turn **amber** while that language's translation is stalled and
+  **red** when no translation engine can serve it (feedback: _Language in
+  trouble_).
+- **Input meter** — a display key to put next to START. While the service is
+  live it shows the time on air and a 10-segment level meter in OBS's colours
+  (green below −20 dBFS, yellow to −9, red above, 2-second peak hold). The
+  level is what the **server** receives, so a moving bar proves the whole path
+  from the mixer to the cloud. It turns red with **NO SOUND** when audio keeps
+  arriving but has been silent for 15 s (aux send down, wrong input picked),
+  and **NO FEED** when the capture app is connected but its audio stopped
+  arriving. Paused is never an alarm.
+- **Variables**: `total_listeners`, `on_air` (`42:13`, blank when not live),
+  `input_peak_db`, `input_state` (`live` / `paused` / `off` / `nosound` /
+  `nofeed` / `unknown`), and for each of your languages `listeners_<code>` and
+  `health_<code>` (`translating` / `idle` / `stalled` / `unavailable`) — e.g.
+  `$(ct:listeners_ru)`.
+
+The meter moves ten times a second over a WebSocket that is opened only while
+a service is live, not paused, and an _Input level meter_ feedback is on a
+button. If that connection is blocked, the meter still moves at the status
+refresh rate.
+
+Against a ChurchTranslator.AI server older than the read-out (before
+2026-10-02) none of this appears: the variables are not created, the presets
+are the earlier ones, and no WebSocket is opened.
 
 ## The one thing worth knowing about language buttons
 

@@ -14,6 +14,7 @@
  *   POST /v1/control/source-language/{code}
  *   GET  /v1/control/source-language
  *   GET  /v1/control/languages                   — dropdown contents
+ *   WS   /v1/control/{session}/meter             — live input level (meter.js)
  *
  * Errors are normalised into ApiError so main.js can map them onto
  * Companion's connection status: 401 is a bad token (the operator has to
@@ -153,23 +154,44 @@ export class ControlApi {
 	/**
 	 * Set the speaker's language. Takes effect for the NEXT session when a
 	 * service is already streaming — the response's appliedToLiveSession
-	 * says which happened, and the module reports that to the operator.
+	 * says which happened, and the module reports that to the operator —
+	 * unless `applyNow`: then the server restarts the running service's
+	 * translation on the new language (?apply=now; listeners hear a few
+	 * seconds' pause).
 	 */
 	// async, so a bad code REJECTS like every other failure here rather
 	// than throwing synchronously — a caller doing .catch() on this must
 	// not miss the one error that arrives by a different door.
-	async setSourceLanguage(code) {
+	async setSourceLanguage(code, { applyNow = false } = {}) {
 		const clean = String(code || '')
 			.trim()
 			.toLowerCase()
 		if (!/^[a-z]{2,3}$/.test(clean)) {
 			throw new ApiError(`"${code}" is not a language code (expected e.g. ru, en, uk)`, { status: 400 })
 		}
-		return this.#request('POST', `/v1/control/source-language/${clean}`)
+		return this.#request('POST', `/v1/control/source-language/${clean}${applyNow ? '?apply=now' : ''}`)
 	}
 
 	/** Roster for the "Set speaker language" dropdown, served by the API. */
 	languages() {
 		return this.#request('GET', '/v1/control/languages')
+	}
+
+	/**
+	 * The live input-level socket (servers from 2026-10-02). The server
+	 * also takes the token as `?t=`, for clients that cannot set headers
+	 * on a WebSocket; Node's can, so the token stays out of the URL — and
+	 * out of every proxy and access log that records one.
+	 *
+	 * Returns null when this runtime has no WebSocket (Node < 22).
+	 */
+	openMeterSocket() {
+		if (!this.configured) {
+			throw new ApiError('Server URL and capture token are both required', { isAuth: true })
+		}
+		const WS = globalThis.WebSocket
+		if (typeof WS !== 'function') return null
+		const url = `${this.baseUrl.replace(/^http/i, 'ws')}/v1/control/${encodeURIComponent(this.sessionId)}/meter`
+		return new WS(url, { headers: { Authorization: `Bearer ${this.token}` } })
 	}
 }
