@@ -197,8 +197,9 @@ developer portal — there is no token, CLI, or API for it.
    manufacturer-product form, Bitfocus staff chose **`churchtranslator-api`**
    and created `bitfocus/companion-module-churchtranslator-api` (invite
    accepted, write access confirmed). The module id/name, package name, and
-   repo links all use that id now; the previous id lives on in the
-   manifest's `legacyIds` so hand-installed tgz configs migrate.
+   repo links all use that id now. The manifest keeps `legacyIds` empty
+   and `version` at "0.0.0" (the build fills it in from package.json),
+   as Bitfocus's 2026-08-20 review asked.
 2. Push this directory's contents to that repo.
 
 **Every release** (including the first):

@@ -239,7 +239,7 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 		this.api = new ControlApi({
 			baseUrl: this.config.baseUrl,
 			// Companion 2.x keeps secrets out of config; older configs that
-			// still carry a plain token keep working (see upgrades.js).
+			// still carry a plain token keep working (no upgrade script needed).
 			token: this.secrets.token || this.config.token,
 			sessionId: this.config.sessionId || 'Sunday',
 		})
