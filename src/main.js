@@ -58,6 +58,8 @@ const MAX_POLL_SECONDS = 60
 const MAX_BACKOFF_SECONDS = 60
 /** How often to re-probe an endpoint the server said it doesn't have. */
 const LANGUAGE_RETRY_MS = 5 * 60 * 1000
+/** How often to retry a language list that failed to load. */
+const LANGUAGE_LIST_RETRY_MS = 60 * 1000
 /** Meter redraws at most this often: ten a second. */
 const METER_REDRAW_MS = 100
 /** Every feedback a poll can move, rechecked after each one. */
@@ -104,6 +106,11 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 		this.languageChoices = []
 		/** The church's own translated languages — one preset button each. */
 		this.targetLanguages = []
+		/** True once the server has answered the language list (even with
+		 * an empty one), and when it was last asked — a failing list is
+		 * retried once a minute, not on every poll. */
+		this.languagesLoaded = false
+		this.languagesTriedAt = 0
 		/** Which speaker language the current presets were built for, so a
 		 * switch can rebuild them (see poll). */
 		this.presetsBuiltFor = null
@@ -135,8 +142,8 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 		this.inputMode = ''
 		/** 1-second tick while live: the on-air clock and meter housekeeping. */
 		this.clockTimer = null
-		/** Ids of the variable definitions last published, so they're only re-sent when they change. */
-		this.variableIds = ''
+		/** The variable definitions last published, so they're only re-sent when they change. */
+		this.variableDefsKey = ''
 		/** Last value sent per variable, so the fast clocks only send what moved. */
 		this.variableCache = {}
 		this.destroyed = false
@@ -181,6 +188,8 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 		this.meter.reset()
 		this.updateStatus(InstanceStatus.Connecting)
 		this.consecutiveFailures = 0
+		// A different server or token may serve a different list.
+		this.languagesLoaded = false
 		await Promise.all([this.#refreshLanguages(), this.poll()])
 		this.#startPolling()
 	}
@@ -203,7 +212,9 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 				label: 'Server URL',
 				width: 12,
 				default: 'https://api.churchtranslator.ai',
-				tooltip: 'The control base URL from the Booth control card. No trailing slash.',
+				tooltip: 'The control base URL from the Booth control card, starting with https://.',
+				minLength: 1,
+				regex: '/^https?:\\/\\/\\S+$/',
 			},
 			{
 				// A secret field, not a textinput: capture tokens drive audio
@@ -260,6 +271,10 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 	 * recover immediately on the first success.
 	 */
 	#startPolling() {
+		// init() and configUpdated() poll first and start the loop after.
+		// A connection disabled while that first poll was still waiting
+		// on a dead server must stay stopped.
+		if (this.destroyed) return
 		this.#stopPolling()
 		this.pollStopped = false
 		const base = Math.min(
@@ -312,7 +327,7 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 
 	async #doPoll() {
 		if (!this.api?.configured) {
-			this.updateStatus(InstanceStatus.BadConfig, 'Server URL and capture token required')
+			this.updateStatus(InstanceStatus.BadConfig, this.api?.configProblem || 'Server URL and capture token required')
 			this.state.reachable = false
 			this.#publish()
 			return
@@ -352,15 +367,21 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 						// timeout — must not take a working booth red. Keep the
 						// last known language and carry on; /status decides
 						// whether the connection is healthy.
+						// The language itself is in the status reply too, and
+						// that is fresher than the last stored value — only the
+						// schedule's pick has to be carried over.
 						this.log('debug', `speaker-language poll failed, keeping last known value: ${e.message}`)
 						language = {
-							sourceLanguage: this.state.sourceLanguage,
+							sourceLanguage: status.sourceLanguage || this.state.sourceLanguage,
 							scheduledSourceLanguage: this.state.scheduledSourceLanguage,
 						}
 					}
 				}
 			} else {
-				language = { sourceLanguage: this.state.sourceLanguage }
+				// Not this.state.sourceLanguage first: it is never empty after
+				// the first poll, so a switch made from the dashboard or by
+				// schedule stayed on the old language until the next re-probe.
+				language = { sourceLanguage: status.sourceLanguage || this.state.sourceLanguage }
 			}
 			this.state = {
 				reachable: true,
@@ -382,10 +403,11 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 			this.updateStatus(InstanceStatus.Ok)
 			this.consecutiveFailures = 0
 			// A connection enabled before the server was reachable published
-			// the tiny offline fallback roster and never retried, leaving the
-			// dropdowns permanently short. Recover on the first good poll.
-			if (!this.languageChoices.length) {
-				await this.#refreshLanguages()
+			// the tiny offline fallback roster; retry it from a good poll. At
+			// most once a minute and not awaited, so a list that keeps
+			// failing neither doubles the traffic nor holds up the buttons.
+			if (!this.languagesLoaded && Date.now() - this.languagesTriedAt > LANGUAGE_LIST_RETRY_MS) {
+				void this.#refreshLanguages()
 			}
 			// The presets include a button for the language currently being
 			// preached, which may not be one of the church's translation
@@ -419,8 +441,11 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 	 */
 	async #refreshLanguages() {
 		if (!this.api?.configured) return
+		this.languagesTriedAt = Date.now()
 		try {
 			const body = await this.api.languages()
+			if (this.destroyed) return
+			this.languagesLoaded = true
 			this.languageLabels = Object.fromEntries((body.sourceLanguages || []).map((l) => [l.code, l.label]))
 			this.languageChoices = (body.sourceLanguages || []).map((l) => ({
 				id: l.code,
@@ -457,15 +482,17 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 	}
 
 	/**
-	 * Variable definitions only when the SET of variables changes (the
-	 * server gained the read-out, the church added a language); values
-	 * every time.
+	 * Variable definitions only when they change (the server gained the
+	 * read-out, the church added a language, the language list arrived
+	 * with names for listeners_<code>); values every time. The names
+	 * count, not just the ids: a status reply that beat the language list
+	 * left "Listeners on ru (ru)" in place for good.
 	 */
 	#publishVariables() {
 		const { definitions, values } = buildVariables(this)
-		const ids = Object.keys(definitions).join(',')
-		if (ids !== this.variableIds) {
-			this.variableIds = ids
+		const key = JSON.stringify(definitions)
+		if (key !== this.variableDefsKey) {
+			this.variableDefsKey = key
 			this.setVariableDefinitions(definitions)
 		}
 		this.setVariableValues(values)
@@ -621,14 +648,27 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 	 * Run an action, then poll so the buttons reflect the new state
 	 * immediately instead of at the next tick. Errors are logged and
 	 * surfaced on the connection rather than thrown into Companion.
+	 *
+	 * `signal` is the action's context.signal. Aborted before the request
+	 * goes out, nothing is sent; aborted while waiting, the request is
+	 * dropped and there's no follow-up poll — the loop catches up on
+	 * whatever the server did with it.
 	 */
-	async runAction(description, fn) {
+	async runAction(description, fn, signal) {
+		if (signal?.aborted) {
+			this.log('info', `${description} — cancelled`)
+			return undefined
+		}
 		try {
 			const result = await fn()
 			this.log('info', `${description} — ok`)
 			await this.poll()
 			return result
 		} catch (e) {
+			if (e instanceof ApiError && e.aborted) {
+				this.log('info', `${description} — cancelled before the server answered`)
+				return undefined
+			}
 			// Name the real cause when the server simply doesn't have the
 			// endpoint — "404" on a booth deck tells an operator nothing.
 			const reason =
@@ -637,7 +677,11 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 					: e.message
 			this.log('error', `${description} failed: ${reason}`)
 			this.state.lastError = reason
-			if (e instanceof ApiError && e.isAuth) {
+			// Missing config is BadConfig, as the poll reports it; calling
+			// it an authentication failure pointed at a revoked token.
+			if (e instanceof ApiError && e.isConfig) {
+				this.updateStatus(InstanceStatus.BadConfig, e.message)
+			} else if (e instanceof ApiError && e.isAuth) {
 				this.updateStatus(InstanceStatus.AuthenticationFailure, e.message)
 			}
 			this.#publish()

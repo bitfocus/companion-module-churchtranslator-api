@@ -17,17 +17,26 @@
  *   WS   /v1/control/{session}/meter             — live input level (meter.js)
  *
  * Errors are normalised into ApiError so main.js can map them onto
- * Companion's connection status: 401 is a bad token (the operator has to
- * fix the config), anything else is a transient failure worth retrying.
+ * Companion's connection status: a missing or malformed config is the
+ * operator's to fix, 401 is a bad token (also the operator's), anything
+ * else is a transient failure worth retrying.
+ *
+ * Every call takes an optional `signal`: an action passes Companion's
+ * context.signal, so a press the operator aborts never reaches the server
+ * (or stops waiting for it).
  */
 
 export class ApiError extends Error {
-	constructor(message, { status = 0, isAuth = false, notFound = false } = {}) {
+	constructor(message, { status = 0, isAuth = false, isConfig = false, notFound = false, aborted = false } = {}) {
 		super(message)
 		this.name = 'ApiError'
 		this.status = status
 		/** The operator must fix something (bad or revoked token). */
 		this.isAuth = isAuth
+		/** The config can't be used as typed (blank, or not a URL) — nothing was sent. */
+		this.isConfig = isConfig
+		/** The caller's signal aborted: the operator cancelled the press. */
+		this.aborted = aborted
 		/**
 		 * The server answered 404. On the OPTIONAL endpoints that means
 		 * "this server is older than this module" — speaker-language
@@ -48,31 +57,54 @@ export class ControlApi {
 	 * @param {number} opts.timeoutMs per-request timeout
 	 */
 	constructor({ baseUrl, token, sessionId, timeoutMs = 8000 }) {
-		this.baseUrl = String(baseUrl || '').replace(/\/+$/, '')
-		this.token = String(token || '')
-		this.sessionId = String(sessionId || 'Sunday')
+		// Trimmed: a pasted URL with a trailing space sent every request
+		// to /%20/v1/control/..., and the 404 read "the church may no
+		// longer exist" — the wrong lead entirely.
+		this.baseUrl = String(baseUrl || '')
+			.trim()
+			.replace(/\/+$/, '')
+		this.token = String(token || '').trim()
+		this.sessionId = String(sessionId || '').trim() || 'Sunday'
 		this.timeoutMs = timeoutMs
 	}
 
-	get configured() {
-		return Boolean(this.baseUrl && this.token)
+	/** Why this config can't be used, or '' when it can. */
+	get configProblem() {
+		if (!this.baseUrl || !this.token) return 'Server URL and capture token required'
+		// Without a scheme, fetch fails with "Failed to parse URL" and the
+		// connection showed as unreachable rather than mistyped.
+		if (!/^https?:\/\/\S+$/i.test(this.baseUrl)) {
+			return 'Server URL must start with https:// (e.g. https://api.churchtranslator.ai)'
+		}
+		return ''
 	}
 
-	async #request(method, path) {
+	get configured() {
+		return !this.configProblem
+	}
+
+	/** A failed fetch or body read, as an ApiError: cancelled, or the network. */
+	#failure(e, signal) {
+		if (signal?.aborted) return new ApiError('Cancelled', { aborted: true })
+		return new ApiError(`Cannot reach ${this.baseUrl}: ${e.message}`, { status: 0 })
+	}
+
+	async #request(method, path, { signal } = {}) {
 		if (!this.configured) {
-			throw new ApiError('Server URL and capture token are both required', { isAuth: true })
+			throw new ApiError(this.configProblem, { isConfig: true })
 		}
 		// AbortSignal.timeout keeps a wedged request from stalling the
 		// poll loop forever — a booth on hotel Wi-Fi hits this.
+		const timeout = AbortSignal.timeout(this.timeoutMs)
 		const res = await fetch(`${this.baseUrl}${path}`, {
 			method,
 			headers: {
 				Authorization: `Bearer ${this.token}`,
 				Accept: 'application/json',
 			},
-			signal: AbortSignal.timeout(this.timeoutMs),
+			signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
 		}).catch((e) => {
-			throw new ApiError(`Cannot reach ${this.baseUrl}: ${e.message}`, { status: 0 })
+			throw this.#failure(e, signal)
 		})
 
 		if (res.status === 401) {
@@ -108,7 +140,9 @@ export class ControlApi {
 		// raw SyntaxError straight past every ApiError handler, so the
 		// connection reported "Unexpected end of JSON input" instead of
 		// something an operator could act on.
-		const text = await res.text()
+		const text = await res.text().catch((e) => {
+			throw this.#failure(e, signal)
+		})
 		if (!text) return {}
 		try {
 			return JSON.parse(text)
@@ -130,20 +164,20 @@ export class ControlApi {
 	 * response's `remoteStartRequested` says a note was left, not that
 	 * audio is flowing — watch `running` on the status poll for that.
 	 */
-	start() {
-		return this.#request('POST', `/v1/control/${encodeURIComponent(this.sessionId)}/start`)
+	start(opts) {
+		return this.#request('POST', `/v1/control/${encodeURIComponent(this.sessionId)}/start`, opts)
 	}
 
-	pause() {
-		return this.#request('POST', `/v1/control/${encodeURIComponent(this.sessionId)}/pause`)
+	pause(opts) {
+		return this.#request('POST', `/v1/control/${encodeURIComponent(this.sessionId)}/pause`, opts)
 	}
 
-	resume() {
-		return this.#request('POST', `/v1/control/${encodeURIComponent(this.sessionId)}/resume`)
+	resume(opts) {
+		return this.#request('POST', `/v1/control/${encodeURIComponent(this.sessionId)}/resume`, opts)
 	}
 
-	stop() {
-		return this.#request('POST', `/v1/control/${encodeURIComponent(this.sessionId)}/stop`)
+	stop(opts) {
+		return this.#request('POST', `/v1/control/${encodeURIComponent(this.sessionId)}/stop`, opts)
 	}
 
 	/** Current speaker language + what the church's schedule would pick now. */
@@ -162,14 +196,14 @@ export class ControlApi {
 	// async, so a bad code REJECTS like every other failure here rather
 	// than throwing synchronously — a caller doing .catch() on this must
 	// not miss the one error that arrives by a different door.
-	async setSourceLanguage(code, { applyNow = false } = {}) {
+	async setSourceLanguage(code, { applyNow = false, signal } = {}) {
 		const clean = String(code || '')
 			.trim()
 			.toLowerCase()
 		if (!/^[a-z]{2,3}$/.test(clean)) {
 			throw new ApiError(`"${code}" is not a language code (expected e.g. ru, en, uk)`, { status: 400 })
 		}
-		return this.#request('POST', `/v1/control/source-language/${clean}${applyNow ? '?apply=now' : ''}`)
+		return this.#request('POST', `/v1/control/source-language/${clean}${applyNow ? '?apply=now' : ''}`, { signal })
 	}
 
 	/** Roster for the "Set speaker language" dropdown, served by the API. */
@@ -187,7 +221,7 @@ export class ControlApi {
 	 */
 	openMeterSocket() {
 		if (!this.configured) {
-			throw new ApiError('Server URL and capture token are both required', { isAuth: true })
+			throw new ApiError(this.configProblem, { isConfig: true })
 		}
 		const WS = globalThis.WebSocket
 		if (typeof WS !== 'function') return null

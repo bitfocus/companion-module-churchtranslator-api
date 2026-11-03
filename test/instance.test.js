@@ -371,3 +371,262 @@ test('an empty 200 body is an ApiError, not a raw SyntaxError', async () => {
 		restore()
 	}
 })
+
+// ---------------------------------------------------------------------------
+// Bitfocus review of v1.3.1 (2026-10-30)
+// ---------------------------------------------------------------------------
+
+/** A fetch that counts requests per path fragment and answers from `routes`. */
+function countingFetch(routes) {
+	const counts = {}
+	const restore = stubFetch({})
+	globalThis.fetch = async (url, init) => {
+		const u = String(url)
+		for (const [fragment, answer] of Object.entries(routes)) {
+			if (!u.includes(fragment)) continue
+			counts[fragment] = (counts[fragment] || 0) + 1
+			if (typeof answer === 'function') return answer(u, init)
+			return new Response(JSON.stringify(answer), { status: 200 })
+		}
+		return new Response(JSON.stringify({ detail: 'not stubbed' }), { status: 404 })
+	}
+	return { counts, restore }
+}
+
+const ROUTES = {
+	'/v1/control/languages': LANGUAGES,
+	'/status': STATUS,
+	'/v1/control/source-language': SOURCE,
+}
+
+test('a press aborted before it goes out sends nothing (M1)', async () => {
+	const { counts, restore } = countingFetch({ ...ROUTES, '/start': { applied: true } })
+	const host = fakeHost()
+	const instance = new ChurchTranslatorInstance(host.context)
+	try {
+		await instance.init({ baseUrl: 'https://api.test', pollSeconds: 60 }, true, { token: 'tok' })
+		await host.published.actions.at(-1).start_service.callback({ options: {} }, { signal: AbortSignal.abort() })
+		assert.equal(counts['/start'] ?? 0, 0, 'a cancelled Start must never reach the server')
+	} finally {
+		await instance.destroy()
+		restore()
+	}
+})
+
+test('a press aborted while waiting on the server is dropped quietly, with no follow-up poll (M1)', async () => {
+	const { counts, restore } = countingFetch({
+		...ROUTES,
+		// Like real fetch: rejects as soon as the signal aborts.
+		'/stop': (_u, init) =>
+			new Promise((_resolve, reject) => {
+				init.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+			}),
+	})
+	const host = fakeHost()
+	const instance = new ChurchTranslatorInstance(host.context)
+	try {
+		await instance.init({ baseUrl: 'https://api.test', pollSeconds: 60 }, true, { token: 'tok' })
+		const statusBefore = counts['/status']
+		const controller = new AbortController()
+		const press = host.published.actions.at(-1).stop_service.callback({ options: {} }, { signal: controller.signal })
+		setTimeout(() => controller.abort(), 10)
+		await press
+		assert.equal(counts['/stop'], 1)
+		assert.equal(counts['/status'], statusBefore, 'no refresh after a cancelled press')
+		assert.equal(host.published.status.at(-1)[0], 'ok', 'cancelling is not a connection failure')
+		assert.equal(instance.state.lastError, '')
+	} finally {
+		await instance.destroy()
+		restore()
+	}
+})
+
+test('a connection disabled during its first slow poll stays stopped (L1)', async () => {
+	let calls = 0
+	const restore = stubFetch({})
+	globalThis.fetch = async (url) => {
+		calls += 1
+		await new Promise((r) => setTimeout(r, 50))
+		const u = String(url)
+		const body = u.includes('languages') ? LANGUAGES : u.includes('/status') ? STATUS : SOURCE
+		return new Response(JSON.stringify(body), { status: 200 })
+	}
+	const host = fakeHost()
+	const instance = new ChurchTranslatorInstance(host.context)
+	try {
+		const starting = instance.init({ baseUrl: 'https://api.test', pollSeconds: 1 }, true, { token: 'tok' })
+		await instance.destroy()
+		await starting
+		const afterInit = calls
+		await new Promise((r) => setTimeout(r, 1200))
+		assert.equal(instance.pollTimer, null, 'no poll timer may be armed on a destroyed instance')
+		assert.equal(calls, afterInit, 'no requests may fire after destroy')
+	} finally {
+		restore()
+	}
+})
+
+test('an older server: a speaker-language change in the status reply reaches the buttons (L2)', async () => {
+	let language = 'ru'
+	const { restore } = countingFetch({
+		'/status': () => new Response(JSON.stringify({ ...STATUS, sourceLanguage: language }), { status: 200 }),
+		'/v1/control/languages': () => new Response('{}', { status: 404 }),
+		'/v1/control/source-language': () => new Response('{}', { status: 404 }),
+	})
+	const host = fakeHost()
+	const instance = new ChurchTranslatorInstance(host.context)
+	try {
+		await instance.init({ baseUrl: 'https://api.test', pollSeconds: 60 }, true, { token: 'tok' })
+		assert.equal(instance.languageApiMissing, true)
+		assert.equal(host.published.values.source_language, 'ru')
+		language = 'en'
+		await instance.poll()
+		assert.equal(host.published.values.source_language, 'en', 'must not wait for the 5-minute re-probe')
+	} finally {
+		await instance.destroy()
+		restore()
+	}
+})
+
+test('a 5xx on the language endpoint still takes the language from the status reply (L2)', async () => {
+	let language = 'ru'
+	let languageEndpointUp = true
+	const { restore } = countingFetch({
+		'/status': () => new Response(JSON.stringify({ ...STATUS, sourceLanguage: language }), { status: 200 }),
+		'/v1/control/languages': LANGUAGES,
+		'/v1/control/source-language': () =>
+			languageEndpointUp
+				? new Response(JSON.stringify({ ...SOURCE, sourceLanguage: language }), { status: 200 })
+				: new Response('{}', { status: 500 }),
+	})
+	const host = fakeHost()
+	const instance = new ChurchTranslatorInstance(host.context)
+	try {
+		await instance.init({ baseUrl: 'https://api.test', pollSeconds: 60 }, true, { token: 'tok' })
+		languageEndpointUp = false
+		language = 'en'
+		await instance.poll()
+		assert.equal(host.published.values.source_language, 'en')
+		assert.equal(host.published.values.scheduled_source_language, 'en', 'the schedule pick is carried over')
+	} finally {
+		await instance.destroy()
+		restore()
+	}
+})
+
+test('a language list that keeps failing is not re-fetched on every poll (L3)', async () => {
+	const { counts, restore } = countingFetch({
+		...ROUTES,
+		'/v1/control/languages': () => new Response(JSON.stringify({ detail: 'boom' }), { status: 500 }),
+	})
+	const host = fakeHost()
+	const instance = new ChurchTranslatorInstance(host.context)
+	try {
+		await instance.init({ baseUrl: 'https://api.test', pollSeconds: 60 }, true, { token: 'tok' })
+		await instance.poll()
+		await instance.poll()
+		assert.equal(counts['/v1/control/languages'], 1, 'retried at most once a minute')
+		// And once the minute is up, the next good poll tries again —
+		// without the poll waiting for it.
+		instance.languagesTriedAt = Date.now() - 61_000
+		await instance.poll()
+		assert.equal(counts['/v1/control/languages'], 2)
+	} finally {
+		await instance.destroy()
+		restore()
+	}
+})
+
+test('an empty language list counts as loaded (L3)', async () => {
+	const { counts, restore } = countingFetch({
+		...ROUTES,
+		'/v1/control/languages': { ok: true, sourceLanguages: [], targetLanguages: [] },
+	})
+	const host = fakeHost()
+	const instance = new ChurchTranslatorInstance(host.context)
+	try {
+		await instance.init({ baseUrl: 'https://api.test', pollSeconds: 60 }, true, { token: 'tok' })
+		const actionsPublished = host.published.actions.length
+		instance.languagesTriedAt = 0
+		await instance.poll()
+		assert.equal(counts['/v1/control/languages'], 1)
+		assert.equal(host.published.actions.length, actionsPublished, 'definitions are not re-sent every poll')
+	} finally {
+		await instance.destroy()
+		restore()
+	}
+})
+
+test('per-language variable names pick up the language names when the list lands after the status (L4)', async () => {
+	let releaseLanguages
+	const languagesHeld = new Promise((r) => (releaseLanguages = r))
+	const { restore } = countingFetch({
+		'/v1/control/languages': async () => (await languagesHeld, new Response(JSON.stringify(LANGUAGES))),
+		'/status': { ...STATUS, sourceLanguage: 'ru', listenersByLanguage: { uk: 3 } },
+		'/v1/control/source-language': SOURCE,
+	})
+	const host = fakeHost()
+	const instance = new ChurchTranslatorInstance(host.context)
+	try {
+		const starting = instance.init({ baseUrl: 'https://api.test', pollSeconds: 60 }, true, { token: 'tok' })
+		await new Promise((r) => setTimeout(r, 20))
+		assert.equal(host.published.variableDefs.at(-1).listeners_uk.name, 'Listeners on uk (uk)')
+		releaseLanguages()
+		await starting
+		assert.equal(host.published.variableDefs.at(-1).listeners_uk.name, 'Listeners on Ukrainian (uk)')
+	} finally {
+		await instance.destroy()
+		restore()
+	}
+})
+
+test('a Server URL without https:// is a config error, not a connection failure (N1)', async () => {
+	const { counts, restore } = countingFetch(ROUTES)
+	const host = fakeHost()
+	const instance = new ChurchTranslatorInstance(host.context)
+	try {
+		await instance.init({ baseUrl: 'api.churchtranslator.ai' }, true, { token: 'tok' })
+		const [status, message] = host.published.status.at(-1)
+		assert.equal(status, 'bad_config')
+		assert.match(message, /https:\/\//)
+		assert.equal(Object.keys(counts).length, 0, 'nothing is sent to a malformed URL')
+	} finally {
+		await instance.destroy()
+		restore()
+	}
+})
+
+test('a pasted Server URL with stray whitespace still reaches the right path (N1)', async () => {
+	const urls = []
+	const restore = stubFetch({})
+	globalThis.fetch = async (url) => {
+		urls.push(String(url))
+		return new Response(JSON.stringify(STATUS), { status: 200 })
+	}
+	try {
+		const { ControlApi } = await import('../src/api.js')
+		const api = new ControlApi({ baseUrl: ' https://api.test/ ', token: 'tok\n', sessionId: 'Sunday ' })
+		await api.status()
+		assert.deepEqual(urls, ['https://api.test/v1/control/Sunday/status'])
+	} finally {
+		restore()
+	}
+})
+
+test('pressing a button with no token keeps Bad Config, never Authentication Failure (N2)', async () => {
+	const host = fakeHost()
+	const instance = new ChurchTranslatorInstance(host.context)
+	try {
+		await instance.init({ baseUrl: 'https://api.test' }, true, {})
+		await host.published.actions
+			.at(-1)
+			.start_service.callback({ options: {} }, { signal: new AbortController().signal })
+		assert.ok(
+			host.published.status.every(([s]) => s !== 'authentication_failure'),
+			'a missing token is not a revoked one',
+		)
+		assert.equal(host.published.status.at(-1)[0], 'bad_config')
+	} finally {
+		await instance.destroy()
+	}
+})

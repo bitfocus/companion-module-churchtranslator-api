@@ -10,6 +10,10 @@
  *
  * Every callback goes through instance.runAction, which polls straight
  * after so the button's own feedback updates without waiting a tick.
+ *
+ * Each one hands its request Companion's context.signal: when the
+ * operator aborts a button's running actions, a press that hasn't gone
+ * out yet never does, and one still waiting on the server stops waiting.
  */
 
 export function buildActions(instance) {
@@ -30,37 +34,41 @@ export function buildActions(instance) {
 			description:
 				'Tells listeners to expect audio and asks your capture app to start streaming. It picks this up within a few seconds if it is open and signed in.',
 			options: [],
-			callback: async () => instance.runAction('Start service', () => instance.api.start()),
+			callback: async (_action, { signal } = {}) =>
+				instance.runAction('Start service', () => instance.api.start({ signal }), signal),
 		},
 
 		pause_translation: {
 			name: 'Pause translation',
 			description: 'Mutes translation. Listeners stay connected and billing stops.',
 			options: [],
-			callback: async () => instance.runAction('Pause translation', () => instance.api.pause()),
+			callback: async (_action, { signal } = {}) =>
+				instance.runAction('Pause translation', () => instance.api.pause({ signal }), signal),
 		},
 
 		resume_translation: {
 			name: 'Resume translation',
 			options: [],
-			callback: async () => instance.runAction('Resume translation', () => instance.api.resume()),
+			callback: async (_action, { signal } = {}) =>
+				instance.runAction('Resume translation', () => instance.api.resume({ signal }), signal),
 		},
 
 		toggle_pause: {
 			name: 'Toggle pause / resume',
 			description: 'One button for both, using the live state. Pair it with the "Translation paused" feedback.',
 			options: [],
-			callback: async () =>
+			callback: async (_action, { signal } = {}) =>
 				instance.state.paused
-					? instance.runAction('Resume translation', () => instance.api.resume())
-					: instance.runAction('Pause translation', () => instance.api.pause()),
+					? instance.runAction('Resume translation', () => instance.api.resume({ signal }), signal)
+					: instance.runAction('Pause translation', () => instance.api.pause({ signal }), signal),
 		},
 
 		stop_service: {
 			name: 'Stop service',
 			description: 'Ends the service — the capture app stops streaming.',
 			options: [],
-			callback: async () => instance.runAction('Stop service', () => instance.api.stop()),
+			callback: async (_action, { signal } = {}) =>
+				instance.runAction('Stop service', () => instance.api.stop({ signal }), signal),
 		},
 
 		set_source_language: {
@@ -89,13 +97,19 @@ export function buildActions(instance) {
 					id: 'apply_now',
 					label: "Switch the running service now (listeners hear a few seconds' pause)",
 					default: false,
+					// A plain tick box. In expression mode an expression giving
+					// 1 or "true" failed the strict check below and quietly
+					// applied to the next service instead.
+					disableAutoExpression: true,
 				},
 			],
-			callback: async (action) => {
+			callback: async (action, { signal } = {}) => {
 				const code = String(action.options.code || '').trim()
 				const applyNow = action.options.apply_now === true
-				const result = await instance.runAction(`Set speaker language to ${code}`, () =>
-					instance.api.setSourceLanguage(code, { applyNow }),
+				const result = await instance.runAction(
+					`Set speaker language to ${code}`,
+					() => instance.api.setSourceLanguage(code, { applyNow, signal }),
+					signal,
 				)
 				// Say out loud when a live service didn't take the change —
 				// otherwise the operator presses RU mid-sermon and believes it.

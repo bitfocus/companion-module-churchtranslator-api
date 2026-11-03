@@ -34,14 +34,15 @@ revoked — mint a new one on the same dashboard card.
 
 | Action                     | Notes                                                                                                                                            |
 | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Start service              | Arms the session and tells listeners to expect audio. Audio itself still comes from your capture app — this does not launch the Mac/Windows app. |
+| Start service              | Tells listeners to expect audio and asks your capture app to start streaming: it collects the request within a few seconds if it is open, signed in and lets the booth start it (Mac 0.7.4+, Windows 0.8.2+). It does not open a closed app. |
 | Pause / Resume translation | Mutes and unmutes translation. Listeners stay connected; billing stops while paused.                                                             |
 | Toggle pause / resume      | One button for both, driven by live state.                                                                                                       |
 | Stop service               | Ends the service; the capture app stops streaming.                                                                                               |
 | Set speaker's language     | A dropdown of every language the platform supports, fetched from your server so it never goes stale.                                             |
 | Refresh status now         | Forces a poll. Rarely needed.                                                                                                                    |
 
-**Feedbacks** — service is live, translation paused, listeners
+**Feedbacks** — service is live, service is starting (START pressed,
+capture app not streaming yet), translation paused, listeners
 connected (with a threshold), speaker's language is X, and "schedule
 wants a different language" for churches whose services aren't all in
 one language. Plus the health read-out's language in trouble, input
@@ -49,7 +50,7 @@ alarm and input level meter (below).
 
 **Variables** — `status`, `listeners`, `source_language`,
 `source_language_label`, `scheduled_source_language`, `engine`, `running`,
-`paused`, `languages_translating`, `last_error` — and, against a server
+`paused`, `starting`, `languages_translating`, `last_error` — and, against a server
 with the health read-out, the ones listed below.
 
 Companion prefixes these with **your connection's label**, not a fixed
@@ -97,8 +98,12 @@ three new feedbacks are listed, and never light.)
 
 The downloadable per-church `.companionconfig` (the dashboard's Booth
 control card) is built server-side from its own copy of
-`templates/translator-page.companionconfig`, so it does not pick any of
-this up yet — see the template README.
+`templates/translator-page.companionconfig`, plus the health buttons
+(`services/api/app/data/companion_health_additions.json`, exported from
+a real Companion running this module's presets). They are on by
+default, since the card hands out this module itself;
+`CT_COMPANION_HEALTH_PRESETS=0` on the API leaves them out (a booth still
+on 1.1).
 
 Pixel contract, verified against `@companion-module/base` 2.1.3's
 typings and Companion 5.0's renderer (`drawPixelBuffer`): `imageBuffer`
@@ -206,11 +211,21 @@ developer portal — there is no token, CLI, or API for it.
 
 1. Bump `version` in `package.json` (`major.minor.patch`). The manifest
    version is overwritten from it at build time, so it doesn't matter.
-2. Create and push a git tag prefixed with `v` — e.g. `v1.0.0`.
+2. Create and push a git tag prefixed with `v` — e.g. `v1.0.0`. A tag
+   that was already submitted is frozen: fix forward with a new version.
+   Publishing a GitHub release on the tag runs `release.yaml`, which
+   attaches the built `.tgz` to the release.
 3. Sign in to <https://developer.bitfocus.io/> **with GitHub**, open
    **My Modules**, and submit that tag as a new version.
 4. Wait for a volunteer reviewer to approve it. Approved versions become
-   downloadable in Companion v4.0.0+ immediately.
+   downloadable immediately in Companion 5.0+ (module API 2.1 needs it).
+
+Keep `.prettierignore`, `.github/workflows/` and the manifest's
+`runtime.type` exactly as in Bitfocus's
+[`companion-module-template-js`](https://github.com/bitfocus/companion-module-template-js):
+the review diffs them against the template and blocks on any difference
+(review of v1.3.1, 2026-10-30). Every Companion 5.x bundles the Node 26
+runtime the template sets.
 
 Pushing a tag alone publishes nothing — only versions submitted through the
 portal are reviewed. A merged pull request publishes nothing either; PRs are

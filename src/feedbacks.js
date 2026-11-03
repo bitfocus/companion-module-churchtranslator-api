@@ -132,6 +132,7 @@ export function buildFeedbacks(instance) {
 					id: 'when',
 					label: 'Light when',
 					default: 'stalled',
+					disableAutoExpression: true,
 					choices: [
 						{ id: 'stalled', label: 'Translation stalled' },
 						{ id: 'unavailable', label: 'No engine can serve it' },
@@ -164,6 +165,7 @@ export function buildFeedbacks(instance) {
 					id: 'which',
 					label: 'Alarm',
 					default: 'any',
+					disableAutoExpression: true,
 					choices: [
 						{ id: 'any', label: 'Either' },
 						{ id: 'nosound', label: 'NO SOUND (silent input)' },

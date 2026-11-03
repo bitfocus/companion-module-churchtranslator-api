@@ -244,7 +244,48 @@ test('the switch-now box is off unless ticked, including on buttons saved before
 	await action.callback({ options: { code: 'ru' } })
 	await action.callback({ options: { code: 'ru', apply_now: false } })
 	await action.callback({ options: { code: 'ru', apply_now: true } })
-	assert.deepEqual(seen, [{ applyNow: false }, { applyNow: false }, { applyNow: true }])
+	assert.deepEqual(
+		seen.map((o) => o.applyNow),
+		[false, false, true],
+	)
+})
+
+test('every action hands its request the cancel signal Companion passes', async () => {
+	const signal = new AbortController().signal
+	const requests = {}
+	const runSignals = []
+	const instance = fakeInstance({ running: true, paused: false })
+	instance.runAction = async (_desc, fn, runSignal) => (runSignals.push(runSignal), fn())
+	for (const name of ['start', 'pause', 'resume', 'stop']) {
+		instance.api[name] = async (opts) => ((requests[name] = opts?.signal), {})
+	}
+	instance.api.setSourceLanguage = async (_code, opts) => ((requests.language = opts?.signal), {})
+	const actions = buildActions(instance)
+	for (const id of ['start_service', 'pause_translation', 'resume_translation', 'stop_service', 'toggle_pause']) {
+		await actions[id].callback({ options: {} }, { signal })
+	}
+	await actions.set_source_language.callback({ options: { code: 'ru' } }, { signal })
+	for (const name of ['start', 'pause', 'resume', 'stop', 'language']) {
+		assert.equal(requests[name], signal, `${name} must carry the signal to the request`)
+	}
+	assert.equal(runSignals.length, 6)
+	assert.ok(
+		runSignals.every((s) => s === signal),
+		'runAction must get the signal too',
+	)
+})
+
+test('fixed-choice options and the switch-now box take no expressions', () => {
+	// In expression mode an expression returning 1 or "true" failed the
+	// strict apply_now === true check and silently applied next service.
+	const instance = fakeInstance()
+	const opt = (defs, id, optionId) => defs[id].options.find((o) => o.id === optionId)
+	assert.equal(opt(buildActions(instance), 'set_source_language', 'apply_now').disableAutoExpression, true)
+	assert.equal(opt(buildFeedbacks(instance), 'language_trouble', 'when').disableAutoExpression, true)
+	assert.equal(opt(buildFeedbacks(instance), 'input_alarm', 'which').disableAutoExpression, true)
+	// The language itself stays expression-capable: a language driven from
+	// a variable is a supported setup.
+	assert.notEqual(opt(buildActions(instance), 'set_source_language', 'code').disableAutoExpression, true)
 })
 
 test('the language dropdown offers something usable before the roster loads', () => {
