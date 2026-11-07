@@ -70,11 +70,11 @@ at the same moment. Problems are shown by exception.
   can serve it — the **Language in trouble** feedback, placed twice
   (`when: stalled`, `when: unavailable`).
 - **Input meter** preset, for the key beside START: the on-air clock
-  (`$(ct:on_air)`) over the **Input level meter** advanced feedback — ten
-  segments drawn into the button's image buffer at dB steps −60 … −3,
-  OBS colours (red ≥ −9, yellow ≥ −20, green below), 2 s peak hold,
-  20 dB/s release — and the **Input alarm** feedback: NO SOUND after 15 s
-  of silent audio, NO FEED after 5 s without frames, nothing while paused.
+  (`$(ct:on_air)`) over a level meter — ten segments at dB steps
+  −60 … −3, OBS colours (red ≥ −9, yellow ≥ −20, green below), 2 s peak
+  hold, 20 dB/s release — and the **Input alarm** feedback: NO SOUND
+  after 15 s of silent audio, NO FEED after 5 s without frames, nothing
+  while paused. Since 1.4.0 Companion draws the meter (below).
 - **Variables**: `total_listeners`, `on_air`, `input_peak_db`,
   `input_state` (live / paused / off / nosound / nofeed / unknown), and
   `listeners_<code>` / `health_<code>` for the church's own languages,
@@ -86,8 +86,8 @@ and `input` (a 1-second level). For the meter, `WS
 /v1/control/{session}/meter` pushes a reading every 100 ms; the module
 opens it (token in the `Authorization` header, not the URL) only while
 the server has the read-out, the service is live and unpaused, and an
-Input level meter feedback is placed — module API 2.x has no feedback
-`subscribe`, so the meter's callback/`unsubscribe` pair is the signal.
+Input level feedback is in use — module API 2.x has no feedback
+`subscribe`, so that feedback's callback/`unsubscribe` pair is the signal.
 Backoff 2 s, 4 s … 60 s (30 s on 4429, the 8-sockets-per-church cap),
 reset by a reading. Redraws are capped at 10/s and skipped unless a
 segment changed; a socket quiet for 1.5 s hands back to the poll's level.
@@ -103,17 +103,67 @@ control card) is built server-side from its own copy of
 a real Companion running this module's presets). They are on by
 default, since the card hands out this module itself;
 `CT_COMPANION_HEALTH_PRESETS=0` on the API leaves them out (a booth still
-on 1.1).
+on 1.1). Since 2026-11-03 the card hands out 1.4.0, and that meter key
+(and the one in this directory's `templates/translator-page.companionconfig`)
+is 1.4.0's layered key below, exported from a Companion 5.0.3 running the
+Input meter preset — with one change: the composite element is inlined as
+a group of its ten boxes, because an imported composite draws nothing (the
+third trap below). A booth still on 1.2.0–1.3.2 that imports it gets the
+key's label, clock and alarms but no bar.
 
-Pixel contract, verified against `@companion-module/base` 2.1.3's
-typings and Companion 5.0's renderer (`drawPixelBuffer`): `imageBuffer`
-is a **base64 string** of exactly `width × height × 4` bytes for
-`imageBufferEncoding: { pixelFormat: 'RGBA' }` (×3 for RGB; 4-byte
-buffers with no format are read as ARGB), placed by
-`imageBufferPosition` in the button's 72-unit space. Without a position
-Companion expects a buffer the size of the whole canvas, whose height
-depends on the top bar — so the module always passes one.
-`feedback.image` is `{ width: 72, height: 58 }` in Companion 5.
+### How the meter is drawn (1.4.0)
+
+Until 1.3.2 the meter was an advanced feedback that painted the bar into
+the button's image buffer. Bitfocus's review of 1.3.1 (M2) noted that
+advanced feedbacks will likely go in a future major API version, so from
+1.4.0 Companion draws it with module API 2.1's graphics:
+
+- **Input level** (`input_level`), a _value_ feedback, returns
+  `{ mode, lit, hold }` — the meter state, the segments the level lights,
+  and the peak-hold segment. Segment counts rather than dB, so the value
+  only changes when a segment does.
+- **Input level meter** (`input_meter`), a _composite element_
+  (`src/composites.js`): ten boxes whose colour and opacity are
+  expressions over its `mode` / `lit` / `hold` options. Unlit segments
+  stay faint; NO SOUND / NO FEED draw a white unlit scale; off and
+  unknown draw nothing.
+- The **Input meter** preset is `layered`: a background box, the label,
+  and the element along the bottom, its options bound to
+  `$(local:level).mode` etc. — a `feedback` local variable on the button
+  driven by Input level. Clock and alarms are style overrides on the
+  label and background. A `simple` variant (the same key without the
+  bar) rides along as the preset's alternative for hosts that can't draw
+  layered buttons.
+
+Checked in a real Companion 5.0.3 (headless with a scratch config, a mock
+control API, the preset dragged onto a button): the key draws as the
+bitmap did — level, peak hold, release, paused, NO SOUND / NO FEED, and
+nothing when stopped — and the meter socket opens when the key is placed
+and closes when it is cleared. Two traps on the way:
+
+- a layered preset's `styleOverrides[].override` must be the full
+  `{ isExpression, value }`: 5.0.x silently drops a bare value, and the
+  whole feedback with it (seen in 5.0.3; 5.1 accepts either);
+- a composite option that a preset binds with an expression must not set
+  `disableAutoExpression` — Companion's element converter turns such an
+  option's expression back into plain text (from its source, not tried);
+- an imported composite draws nothing: Companion's import gives the
+  connection a new id and rewrites it in actions, feedbacks and local
+  variables, but not in a layer's `connectionId` (seen in 5.0.3 with the
+  dashboard download, both Full Import and the Buttons tab;
+  `VisitorReferencesBase.visitDrawElements` is the same in 5.1.1 and on
+  `main`). A key built from the preset loses its bar when its page is
+  exported and imported elsewhere; the dashboard download therefore inlines
+  the element (a group whose boxes read `$(local:level)` directly), which
+  imports, draws and exports back unchanged.
+
+**Buttons saved with 1.2.0–1.3.2's meter** (the old `input_meter`
+advanced feedback — including the meter key of a dashboard download made
+before 2026-11-03) lose
+the bar on 1.4.0; their clock and alarms are separate feedbacks and keep
+working. No upgrade script can fix that: upgrade scripts can only change
+a feedback's id and options, not add elements or local variables to a
+button. Delete the key and drag the Input meter preset again.
 
 ## The one thing worth knowing about language buttons
 
@@ -231,11 +281,13 @@ Pushing a tag alone publishes nothing — only versions submitted through the
 portal are reviewed. A merged pull request publishes nothing either; PRs are
 how you contribute to somebody else's module.
 
-**Before the store approval lands**, the built
-`churchtranslator-api-<version>.tgz` can be handed to a church
-directly and imported through Companion's "import module package", or
-dropped into the developer-modules path. That is the path to use for a
-demo with a fixed date — the review queue has no published SLA.
+**A version the store doesn't have yet** can be handed to a church
+directly: the built `churchtranslator-api-<version>.tgz`, imported through
+Companion's "import module package" or dropped into the developer-modules
+path. That is the path to use for a demo with a fixed date — the review
+queue has no published SLA. It installs beside any older version, and a
+connection that already exists stays on its version until its Module
+Version is changed by hand.
 
 Keep the API-side contract in mind when changing anything here: the
 endpoints are documented in `docs/operations.md` under "Booth control

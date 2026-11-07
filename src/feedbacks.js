@@ -12,7 +12,7 @@
  * hasn't started yet isn't an error.
  */
 import { combineRgb } from '@companion-module/base'
-import { drawMeter, inputView } from './health.js'
+import { inputView, meterValue } from './health.js'
 
 const WHITE = combineRgb(255, 255, 255)
 const BLACK = combineRgb(0, 0, 0)
@@ -181,14 +181,18 @@ export function buildFeedbacks(instance) {
 			},
 		},
 
-		input_meter: {
-			type: 'advanced',
-			name: 'Input level meter',
+		// The meter's value, drawn by the "Input level meter" element
+		// (composites.js). It replaced 1.3's advanced "input_meter"
+		// feedback, which painted the bar into an image buffer; buttons
+		// saved with that one lose their bar and need the preset again.
+		input_level: {
+			type: 'value',
+			name: 'Input level (for the level meter)',
 			description:
-				'Draws a 10-segment level meter along the bottom of the button: what the SERVER hears, so a moving bar ' +
-				'proves the whole path from the mixer to the cloud. Green below -20 dBFS, yellow to -9, red above (OBS ' +
-				'colours), with a 2-second peak hold. Live updates ten times a second while the service is live.',
-			affectedProperties: ['imageBuffer'],
+				'The input level meter as { mode, lit, hold }: mode is live / paused / nosound / nofeed / off / unknown, ' +
+				'lit is how many of the 10 segments the level lights, hold is the 2-second peak-hold segment (0 = none). ' +
+				'What the SERVER hears, ten updates a second while the service is live. Put it in a local variable and ' +
+				'feed the "Input level meter" element from it — the Input meter preset does both.',
 			options: [],
 			// Module API 2.x has no feedback subscribe callback: the callback
 			// runs when a feedback is placed (and on every recheck), and
@@ -197,7 +201,7 @@ export function buildFeedbacks(instance) {
 			// meter socket only then.
 			callback: (feedback) => {
 				instance.meterFeedbackSeen?.(feedback.id)
-				return drawMeter(inputView(instance.state, instance.meter), feedback.image)
+				return meterValue(inputView(instance.state, instance.meter))
 			},
 			unsubscribe: (feedback) => {
 				instance.meterFeedbackGone?.(feedback.id)

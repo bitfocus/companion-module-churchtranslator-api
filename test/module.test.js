@@ -21,6 +21,7 @@ import { buildActions } from '../src/actions.js'
 import { buildFeedbacks } from '../src/feedbacks.js'
 import { buildVariables } from '../src/variables.js'
 import { buildPresets } from '../src/presets.js'
+import { buildCompositeElements } from '../src/composites.js'
 
 /** Swap global fetch for one call, returning a recorded request log. */
 function withFetch(handler, fn) {
@@ -379,19 +380,31 @@ test('every preset referenced by the structure exists', () => {
 	}
 })
 
-test('every preset action and feedback refers to a real definition', () => {
-	const instance = fakeInstance({ sourceLanguage: 'ru' })
-	const { presets } = buildPresets(instance, [{ code: 'en', label: 'English' }])
-	const actionIds = new Set(Object.keys(buildActions(instance)))
-	const feedbackIds = new Set(Object.keys(buildFeedbacks(instance)))
-	for (const [id, preset] of Object.entries(presets)) {
-		for (const step of preset.steps) {
-			for (const action of [...step.down, ...step.up]) {
-				assert.ok(actionIds.has(action.actionId), `preset ${id} uses unknown action ${action.actionId}`)
+test('every preset action, feedback and drawing element refers to a real definition', () => {
+	// With and without the health read-out: its meter key is the one
+	// preset with variants, a local variable and a drawing element.
+	for (const hasHealth of [false, true]) {
+		const instance = fakeInstance({ sourceLanguage: 'ru', hasHealth })
+		const { presets } = buildPresets(instance, [{ code: 'en', label: 'English' }])
+		const actionIds = new Set(Object.keys(buildActions(instance)))
+		const feedbackIds = new Set(Object.keys(buildFeedbacks(instance)))
+		const elementIds = new Set(Object.keys(buildCompositeElements()))
+		for (const [id, entry] of Object.entries(presets)) {
+			const variants = entry.type === 'alternatives' ? entry.variants : [entry]
+			for (const preset of variants) {
+				for (const step of preset.steps) {
+					for (const action of [...step.down, ...step.up]) {
+						assert.ok(actionIds.has(action.actionId), `preset ${id} uses unknown action ${action.actionId}`)
+					}
+				}
+				for (const fb of [...preset.feedbacks, ...(preset.localVariables || [])]) {
+					assert.ok(feedbackIds.has(fb.feedbackId), `preset ${id} uses unknown feedback ${fb.feedbackId}`)
+				}
+				for (const el of preset.elements || []) {
+					if (el.type === 'composite')
+						assert.ok(elementIds.has(el.elementId), `preset ${id} draws unknown ${el.elementId}`)
+				}
 			}
-		}
-		for (const fb of preset.feedbacks) {
-			assert.ok(feedbackIds.has(fb.feedbackId), `preset ${id} uses unknown feedback ${fb.feedbackId}`)
 		}
 	}
 })

@@ -34,7 +34,13 @@ exported from a real Companion 5.0.3 running this module's own presets
 (`controls.importPreset`, then `/int/export/page`), so the layered-button
 schema is exactly what Companion writes. Verified 2026-10-02: imported into
 Companion 5.0.3 with module 1.2.0 against the dev API, live listeners and
-audio — counts, meter, NO SOUND and its clearing all rendered.
+audio — counts, meter, NO SOUND and its clearing all rendered. Its meter
+key was re-exported 2026-11-03 from module 1.4.0's Input meter preset, its
+composite element inlined as a group of boxes fed by the Input level
+feedback (an imported composite draws nothing — module README, "How the
+meter is drawn"), so it needs 1.4.0: on 1.2.0–1.3.2 it shows no bar.
+Imported into Companion 5.0.3 against a mock control API, it drew level,
+peak hold, NO SOUND / NO FEED, paused and stopped as the preset does.
 
 The connection names module **`churchtranslator-api` with no pinned
 version**. The original export named `churchtranslator-churchtranslator`

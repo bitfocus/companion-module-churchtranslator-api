@@ -58,7 +58,7 @@ driven from a variable or trigger without a separate action.
   the speaker language for a session starting now, but the current setting is
   something else. Useful as a check before a bilingual Sunday.
 - **Language in trouble**, **Input alarm (NO SOUND / NO FEED)** and **Input
-  level meter** — the health read-out, below.
+  level** — the health read-out, below.
 
 ## Variables
 
@@ -90,6 +90,15 @@ so the one button that changes colour is the one to look at.
   arriving but has been silent for 15 s (aux send down, wrong input picked),
   and **NO FEED** when the capture app is connected but its audio stopped
   arriving. Paused is never an alarm.
+- **Your own meter**: the bar is the module's **Input level meter** element.
+  Add it to any button, add a local variable from the **Input level**
+  feedback (say `level`), and set the element's three options to the
+  expressions `$(local:level).mode`, `$(local:level).lit` and
+  `$(local:level).hold`. The Input meter preset comes wired up this way.
+  A meter key placed with module 1.3 or earlier loses its bar from 1.4.0 —
+  drag the preset again. So does a meter key copied to another Companion
+  through Import / Export (Companion doesn't carry an element's connection
+  across an import); drag the preset there too.
 - **Variables**: `total_listeners`, `on_air` (`42:13`, blank when not live),
   `input_peak_db`, `input_state` (`live` / `paused` / `off` / `nosound` /
   `nofeed` / `unknown`), and for each of your languages `listeners_<code>` and
@@ -97,7 +106,7 @@ so the one button that changes colour is the one to look at.
   `$(ct:listeners_ru)`.
 
 The meter moves ten times a second over a WebSocket that is opened only while
-a service is live, not paused, and an _Input level meter_ feedback is on a
+a service is live, not paused, and an _Input level_ feedback is on a
 button. If that connection is blocked, the meter still moves at the status
 refresh rate.
 

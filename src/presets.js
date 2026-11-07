@@ -37,6 +37,130 @@ const LIVE_TEXT = combineRgb(62, 201, 126)
 
 const style = (text, bgcolor, color = WHITE, size = '14') => ({ text, size, color, bgcolor })
 
+/** Where the meter sits on its key: the bitmap meter's place, a strip along the bottom of the content area. */
+const METER_BOUNDS = { x: 100 / 36, y: 80, width: 100 - 200 / 36, height: 16 }
+/**
+ * Text sizes as Companion itself converts a simple preset's: font size in
+ * percent of the element's height, pt × 2.1; 'auto' is 100 and may shrink.
+ */
+const FONT_14 = 29.4
+const FONT_18 = 37.8
+
+/**
+ * START has nothing left to do once the service is live, so on the native
+ * plugin it becomes the input meter. A Companion button can't change what
+ * it IS, so this is its own display key — put it next to START. Calm when
+ * healthy: the on-air clock in green over a moving bar. Red, with the
+ * reason, when the server hears nothing.
+ *
+ * Layered, because Companion draws the bar (composites.js): the "Input
+ * level" value feedback fills the button's `level` local variable, and the
+ * meter element reads it. The simple variant is for a host that can't
+ * draw layered buttons: the same key without the bar.
+ */
+function inputMeterPreset() {
+	const name = 'Input meter (on-air clock + level)'
+	const keywords = ['meter', 'level', 'input', 'audio', 'on air', 'clock', 'no sound', 'health']
+	const level = (field, fallback) => ({ isExpression: true, value: `$(local:level)?.${field} ?? ${fallback}` })
+	// Overrides spelled out as { isExpression, value }: Companion 5.0.x
+	// silently drops a bare value here (and with it the whole feedback),
+	// though the 2.1 typings allow one and 5.1 accepts it.
+	const override = (elementId, property, value) => ({
+		elementId,
+		elementProperty: property,
+		override: { isExpression: false, value },
+	})
+	const label = (property, value) => override('label', property, value)
+	const alarm = (which, text) => ({
+		feedbackId: 'input_alarm',
+		options: { which },
+		styleOverrides: [
+			override('background', 'color', ALARM_RED),
+			label('text', text),
+			label('fontsize', 100),
+			label('fontsizeAllowShrink', true),
+			label('color', WHITE),
+		],
+	})
+	return {
+		type: 'alternatives',
+		variants: [
+			{
+				type: 'layered',
+				name,
+				keywords,
+				// Bottom to top: the bar is drawn over the label, as the image
+				// buffer was.
+				elements: [
+					{ type: 'box', id: 'background', name: 'Background', x: 0, y: 0, width: 100, height: 100, color: DARK },
+					{
+						type: 'text',
+						id: 'label',
+						name: 'Label',
+						x: 0,
+						y: 0,
+						width: 100,
+						height: 100,
+						text: 'Input\\nmeter',
+						fontsize: FONT_14,
+						color: WHITE,
+						halign: 'center',
+						valign: 'center',
+					},
+					{
+						type: 'composite',
+						id: 'meter',
+						name: 'Level meter',
+						elementId: 'input_meter',
+						...METER_BOUNDS,
+						// Until the feedback has answered, the meter stays hidden.
+						options: { mode: level('mode', "'off'"), lit: level('lit', 0), hold: level('hold', 0) },
+					},
+				],
+				localVariables: [{ variableType: 'feedback', variableName: 'level', feedbackId: 'input_level', options: {} }],
+				steps: [{ down: [], up: [] }],
+				// Order matters: Companion applies feedback overrides top to
+				// bottom, so the alarms come last and win.
+				feedbacks: [
+					{
+						feedbackId: 'service_live',
+						options: {},
+						styleOverrides: [label('text', '$(ct:on_air)'), label('fontsize', FONT_18), label('color', LIVE_TEXT)],
+					},
+					{
+						feedbackId: 'service_paused',
+						options: {},
+						styleOverrides: [label('text', 'PAUSED'), label('fontsize', FONT_14), label('color', AMBER)],
+					},
+					alarm('nosound', 'NO SOUND\\ncheck mixer'),
+					alarm('nofeed', 'NO FEED\\napp stalled'),
+				],
+			},
+			{
+				type: 'simple',
+				name,
+				keywords,
+				style: style('Input\\nmeter', DARK, WHITE, '14'),
+				steps: [{ down: [], up: [] }],
+				feedbacks: [
+					{ feedbackId: 'service_live', options: {}, style: { text: '$(ct:on_air)', size: '18', color: LIVE_TEXT } },
+					{ feedbackId: 'service_paused', options: {}, style: { text: 'PAUSED', size: '14', color: AMBER } },
+					{
+						feedbackId: 'input_alarm',
+						options: { which: 'nosound' },
+						style: { bgcolor: ALARM_RED, color: WHITE, text: 'NO SOUND\\ncheck mixer', size: 'auto' },
+					},
+					{
+						feedbackId: 'input_alarm',
+						options: { which: 'nofeed' },
+						style: { bgcolor: ALARM_RED, color: WHITE, text: 'NO FEED\\napp stalled', size: 'auto' },
+					},
+				],
+			},
+		],
+	}
+}
+
 export function buildPresets(instance, targetLanguages) {
 	const presets = {}
 	const health = Boolean(instance.state?.hasHealth)
@@ -114,37 +238,7 @@ export function buildPresets(instance, targetLanguages) {
 		],
 	}
 
-	if (health) {
-		// START has nothing left to do once the service is live, so on the
-		// native plugin it becomes the input meter. A Companion button can't
-		// change what it IS, so this is its own display key — put it next
-		// to START. Calm when healthy: the on-air clock in green over a
-		// moving bar. Red, with the reason, when the server hears nothing.
-		presets['input_meter'] = {
-			type: 'simple',
-			name: 'Input meter (on-air clock + level)',
-			keywords: ['meter', 'level', 'input', 'audio', 'on air', 'clock', 'no sound', 'health'],
-			style: style('Input\\nmeter', DARK, WHITE, '14'),
-			steps: [{ down: [], up: [] }],
-			// Order matters: Companion applies feedback styles top to bottom,
-			// so the alarms come last and win.
-			feedbacks: [
-				{ feedbackId: 'input_meter', options: {} },
-				{ feedbackId: 'service_live', options: {}, style: { text: '$(ct:on_air)', size: '18', color: LIVE_TEXT } },
-				{ feedbackId: 'service_paused', options: {}, style: { text: 'PAUSED', size: '14', color: AMBER } },
-				{
-					feedbackId: 'input_alarm',
-					options: { which: 'nosound' },
-					style: { bgcolor: ALARM_RED, color: WHITE, text: 'NO SOUND\\ncheck mixer', size: 'auto' },
-				},
-				{
-					feedbackId: 'input_alarm',
-					options: { which: 'nofeed' },
-					style: { bgcolor: ALARM_RED, color: WHITE, text: 'NO FEED\\napp stalled', size: 'auto' },
-				},
-			],
-		}
-	}
+	if (health) presets['input_meter'] = inputMeterPreset()
 
 	presets['stop_service'] = {
 		type: 'simple',

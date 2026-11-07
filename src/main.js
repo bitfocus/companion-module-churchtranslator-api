@@ -18,7 +18,8 @@
  *   variables.js — text for button labels ($(ct:listeners) etc.)
  *   presets.js   — ready-made buttons so a new user isn't staring at a
  *                  blank config
- *   health.js    — the health read-out: parsing, alarms, meter pixels
+ *   composites.js — the level meter as a drawing element Companion draws
+ *   health.js    — the health read-out: parsing, alarms, meter segments
  *   meter.js     — the live input-level WebSocket
  *
  * One poll loop drives feedbacks and variables. Companion asks for
@@ -39,6 +40,7 @@ import { buildActions } from './actions.js'
 import { buildFeedbacks } from './feedbacks.js'
 import { buildVariables, peakText } from './variables.js'
 import { buildPresets } from './presets.js'
+import { buildCompositeElements } from './composites.js'
 import { inputView, meterKey, onAirText, parseHealth } from './health.js'
 import { MeterFeed } from './meter.js'
 
@@ -72,7 +74,7 @@ const POLLED_FEEDBACKS = [
 	'schedule_pending',
 	'language_trouble',
 	'input_alarm',
-	'input_meter',
+	'input_level',
 ]
 
 export default class ChurchTranslatorInstance extends InstanceBase {
@@ -127,7 +129,7 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 		this.pollStopped = false
 		this.pollTimer = null
 
-		/** Placed "Input level meter" feedbacks, by feedback instance id. */
+		/** Placed "Input level" feedbacks (the meter's value), by feedback instance id. */
 		this.meterFeedbackIds = new Set()
 		this.meter = new MeterFeed({
 			connect: () => this.api.openMeterSocket(),
@@ -157,6 +159,8 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 
 		this.setActionDefinitions(buildActions(this))
 		this.setFeedbackDefinitions(buildFeedbacks(this))
+		// Before the presets: the Input meter preset is built from it.
+		this.setCompositeElementDefinitions(buildCompositeElements())
 		this.#publishVariables()
 		this.#publishPresets()
 
@@ -560,7 +564,7 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 		)
 	}
 
-	/** From the meter feedback's callback: a meter button exists. */
+	/** From the Input level feedback's callback: a meter button exists. */
 	meterFeedbackSeen(id) {
 		if (this.meterFeedbackIds.has(id)) return
 		this.meterFeedbackIds.add(id)
@@ -569,7 +573,7 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 		if (this.meterFeedbackIds.size === 1) queueMicrotask(() => this.syncMeter())
 	}
 
-	/** From the meter feedback's unsubscribe: a meter button was removed or disabled. */
+	/** From the Input level feedback's unsubscribe: a meter button was removed or disabled. */
 	meterFeedbackGone(id) {
 		if (!this.meterFeedbackIds.delete(id)) return
 		if (this.meterFeedbackIds.size === 0) queueMicrotask(() => this.syncMeter())
@@ -612,7 +616,7 @@ export default class ChurchTranslatorInstance extends InstanceBase {
 		if (key === this.meterDrawnKey) return
 		this.meterDrawnKey = key
 		this.meterDrawnAt = Date.now()
-		if (this.meterFeedbackIds.size > 0) this.checkFeedbacks('input_meter')
+		if (this.meterFeedbackIds.size > 0) this.checkFeedbacks('input_level')
 	}
 
 	/** The 1-second tick runs while a service is live on a server with the read-out. */

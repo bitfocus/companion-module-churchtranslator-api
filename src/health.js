@@ -5,8 +5,9 @@
  * language, each language's translation state, the input level the
  * SERVER hears, and when the stream started — and a WebSocket that
  * pushes the level ten times a second (meter.js). This file is the pure
- * half: reading those fields, turning a level into meter segments, and
- * drawing the meter as pixels. No timers, no sockets, no Companion.
+ * half: reading those fields and turning a level into meter segments —
+ * what the meter element (composites.js) draws. No timers, no sockets,
+ * no Companion.
  *
  * The thresholds are the native Stream Deck plugin's (1.4.0), on purpose:
  * a church running both on two decks must see the same alarm at the same
@@ -41,15 +42,15 @@ export const PEAK_HOLD_MS = 2000
 /** How fast the bar falls after a peak — near OBS's, a little quicker for 10 chunky LEDs. */
 export const RELEASE_DB_PER_S = 20
 
-const RED = [0xff, 0x4d, 0x4d]
-const YELLOW = [0xf2, 0xc2, 0x30]
-const GREEN = [0x3e, 0xc9, 0x7e]
-const WHITE = [0xff, 0xff, 0xff]
-/** Unlit segments stay faintly visible so the bar's length — the scale — reads in silence, like a hardware meter's dark LEDs. */
-const UNLIT_ALPHA = 43
+/** The native plugin's segment colours, as packed RGB. */
+export const METER_RED = 0xff4d4d
+export const METER_YELLOW = 0xf2c230
+export const METER_GREEN = 0x3ec97e
+/** Unlit segments stay faintly visible (percent opacity) so the bar's length — the scale — reads in silence, like a hardware meter's dark LEDs. */
+export const UNLIT_OPACITY = 17
 
 /** OBS's zones: green below -20, yellow to -9, red above. */
-export const meterRgb = (db) => (db >= -9 ? RED : db >= -20 ? YELLOW : GREEN)
+export const meterColor = (db) => (db >= -9 ? METER_RED : db >= -20 ? METER_YELLOW : METER_GREEN)
 
 /** Lit segments for a level. */
 export function segmentsFor(db) {
@@ -161,60 +162,13 @@ export function inputView(s, meter, now = Date.now()) {
 	return { mode, lit: segmentsFor(shown), hold: segmentsFor(held), peakDb }
 }
 
+/**
+ * What the "Input level" value feedback returns: the meter element's three
+ * inputs and nothing else. Segment counts, not decibels, so the value —
+ * and with it the button — changes only when a segment lights or goes
+ * out, never on every reading.
+ */
+export const meterValue = (view) => ({ mode: view.mode, lit: view.lit, hold: view.hold })
+
 /** What actually changes the drawn meter — compared before asking Companion to redraw. */
 export const meterKey = (view) => `${view.mode}|${view.lit}|${view.hold}`
-
-/**
- * The input meter as pixels: ten segments across the bottom of the
- * button, for an advanced feedback's `imageBuffer`.
- *
- * Pixel contract (checked against @companion-module/base 2.1.3's typings
- * and Companion 5.0's renderer, `drawPixelBuffer`): `imageBuffer` is a
- * base64 string of exactly width × height × 4 bytes for RGBA, drawn at
- * `imageBufferPosition` in the button's 72-unit space. Without an explicit
- * position Companion assumes a buffer the size of the whole canvas (whose
- * height depends on the top bar), so the position is always given. Gaps
- * are fully transparent, so the button's own colour — red in an alarm —
- * shows through.
- *
- * Nothing is drawn when the meter has nothing to say (`off`, `unknown`):
- * the button keeps its own face, as START does on the native plugin.
- *
- * @param {object} view   from inputView()
- * @param {{width:number,height:number}} [image] feedback.image, when Companion supplies it
- */
-export function drawMeter(view, image) {
-	if (view.mode === 'off' || view.mode === 'unknown') return {}
-	const width = Math.max(20, Math.round(image?.width || 72))
-	const canvasH = Math.max(20, Math.round(image?.height || 72))
-	const n = METER_STEPS.length
-	const gap = Math.max(1, Math.round(width / 36))
-	const segW = Math.max(1, Math.floor((width - 2 * gap - (n - 1) * gap) / n))
-	const pad = Math.floor((width - n * segW - (n - 1) * gap) / 2)
-	const height = Math.max(4, Math.round(canvasH * 0.16))
-	const bottom = Math.max(1, Math.round(canvasH * 0.04))
-	// An alarm draws the scale in white over the alarm colour, unlit: the
-	// words on the key say what is wrong, the empty bar says "no level".
-	const mono = view.mode === 'nosound' || view.mode === 'nofeed'
-	const px = new Uint8Array(width * height * 4)
-	for (let i = 0; i < n; i++) {
-		const on = !mono && (i < view.lit || i === view.hold - 1)
-		const [r, g, b] = mono ? WHITE : meterRgb(METER_STEPS[i])
-		const a = on ? 255 : UNLIT_ALPHA
-		const x0 = pad + i * (segW + gap)
-		for (let y = 0; y < height; y++) {
-			for (let x = x0; x < x0 + segW; x++) {
-				const o = (y * width + x) * 4
-				px[o] = r
-				px[o + 1] = g
-				px[o + 2] = b
-				px[o + 3] = a
-			}
-		}
-	}
-	return {
-		imageBuffer: Buffer.from(px.buffer).toString('base64'),
-		imageBufferEncoding: { pixelFormat: 'RGBA' },
-		imageBufferPosition: { x: 0, y: canvasH - height - bottom, width, height },
-	}
-}
